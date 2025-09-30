@@ -3,6 +3,7 @@ from pathlib import Path
 import argparse, yaml, torch, numpy as np
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import csv
 
 from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.utils.transforms import em_seg_transforms
@@ -43,6 +44,15 @@ def eval_loop(backbone, head, loader, device, num_classes, out_dir=None, preview
     gt_pix = np.zeros(num_classes, dtype=np.float64)
     pr_pix = np.zeros(num_classes, dtype=np.float64)
 
+    # Foreground-collapsed accumulators (bg=0, fg=1..K-1)
+    fg_inter = 0.0
+    fg_union = 0.0
+    fg_tp = 0.0
+    fg_fp = 0.0
+    fg_fn = 0.0
+    fg_gt_pix = 0.0
+    fg_pr_pix = 0.0
+
     prev_count = 0
     prev_dir = None
     if out_dir is not None:
@@ -53,8 +63,9 @@ def eval_loop(backbone, head, loader, device, num_classes, out_dir=None, preview
         imgs = imgs.to(device)
         masks = masks.to(device)
         logits = head(backbone(imgs), masks.shape[-2:])
-        pred = logits.argmax(1)
+        pred = logits.argmax(1)  # (B,H,W)
 
+        # Per-class stats
         for k in range(num_classes):
             pk = (pred == k)
             mk = (masks == k)
@@ -68,7 +79,18 @@ def eval_loop(backbone, head, loader, device, num_classes, out_dir=None, preview
             gt_pix[k] += mk.sum().item()
             pr_pix[k] += pk.sum().item()
 
-        # save a few triptychs
+        # Foreground-collapsed (k>0)
+        pk_fg = (pred > 0)
+        mk_fg = (masks > 0)
+        fg_inter += (pk_fg & mk_fg).sum().item()
+        fg_union += (pk_fg | mk_fg).sum().item()
+        fg_tp    += (pk_fg & mk_fg).sum().item()
+        fg_fp    += (pk_fg & ~mk_fg).sum().item()
+        fg_fn    += (~pk_fg & mk_fg).sum().item()
+        fg_gt_pix += mk_fg.sum().item()
+        fg_pr_pix += pk_fg.sum().item()
+
+        # Previews (triptychs)
         if prev_dir is not None and prev_count < preview_n:
             H, W = masks.shape[-2:]
             im = imgs.clamp(0,1)
@@ -84,13 +106,20 @@ def eval_loop(backbone, head, loader, device, num_classes, out_dir=None, preview
     iou = inter / (union + eps)
     dice = (2 * tp) / (2 * tp + fp + fn + eps)
 
+    # Foreground-only metrics
+    iou_f  = fg_inter / (fg_union + eps)
+    dice_f = (2 * fg_tp) / (2 * fg_tp + fg_fp + fg_fn + eps)
+
     print("Class pixel totals (GT):", gt_pix.astype(int).tolist())
     print("Class pixel totals (PR):", pr_pix.astype(int).tolist())
+    print(f"Foreground totals (GT, PR): {int(fg_gt_pix)} {int(fg_pr_pix)}")
     for k in range(num_classes):
         if gt_pix[k] == 0:
-            print(f"[WARN] test set has ZERO GT pixels for class {k} — IoU/Dice are not meaningful.")
+            print(f"[WARN] test set has ZERO GT pixels for class {k} — IoU/Dice per-class not meaningful.")
+    if fg_gt_pix == 0:
+        print("[WARN] test set has ZERO foreground pixels — IoU_f/Dice_f not meaningful.")
 
-    return iou, dice
+    return iou, dice, iou_f, dice_f
 
 
 # --- replace your `main()` with this version ---
@@ -150,19 +179,20 @@ def main():
     bb.load_state_dict(bb_state, strict=False)
 
     bb.eval(); head.eval()
-    iou, dice = eval_loop(bb, head, loader, device, cfg["num_classes"], out_dir=run_dir)
+    iou, dice, iou_f, dice_f = eval_loop(bb, head, loader, device, cfg["num_classes"], out_dir=run_dir)
 
     # save CSV
-    import csv
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["class","IoU","Dice"])
         for k,(i,d) in enumerate(zip(iou, dice)):
             w.writerow([k, f"{i:.6f}", f"{d:.6f}"])
+        # foreground-collapsed row
+        w.writerow(["foreground", f"{iou_f:.6f}", f"{dice_f:.6f}"])
+        # mean over classes (same as before)
         w.writerow(["mean", f"{iou.mean():.6f}", f"{dice.mean():.6f}"])
     print(f"Saved metrics → {out_csv}")
-    print(f"Used checkpoint → {ckpt_path}")
 
 
 if __name__ == "__main__":

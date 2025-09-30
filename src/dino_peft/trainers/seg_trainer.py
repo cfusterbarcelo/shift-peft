@@ -22,6 +22,48 @@ def pick_device(cfg_device: str | None):
         return torch.device("mps")
     return torch.device("cpu")
 
+def _make_ce(class_weights, device):
+    if class_weights is not None:
+        w = torch.tensor(class_weights, dtype=torch.float32, device=device)
+    else:
+        w = None
+    return nn.CrossEntropyLoss(weight=w)
+
+class TverskyLoss(nn.Module):
+    def __init__(self, alpha=0.7, beta=0.3, eps=1e-6):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.eps = eps
+    def forward(self, logits, target):
+        # logits: [B,2,H,W], target: [B,H,W] (long, 0/1)
+        probs = torch.softmax(logits, dim=1)
+        p_fg = probs[:, 1, ...]
+        t_fg = (target == 1).float()
+        tp = (p_fg * t_fg).sum(dim=(1,2))
+        fp = (p_fg * (1.0 - t_fg)).sum(dim=(1,2))
+        fn = ((1.0 - p_fg) * t_fg).sum(dim=(1,2))
+        tversky = (tp + self.eps) / (tp + self.alpha * fp + self.beta * fn + self.eps)
+        return 1.0 - tversky.mean()
+
+def build_criterion(cfg, device):
+    loss_name = cfg.get("loss", "ce")
+    if loss_name == "ce":
+        return _make_ce(cfg.get("class_weights"), device)
+    elif loss_name == "ce_tversky":
+        ce = _make_ce(cfg.get("class_weights"), device)
+        tv = TverskyLoss(
+            alpha=cfg.get("tversky_alpha", 0.7),
+            beta=cfg.get("tversky_beta", 0.3),
+            eps=cfg.get("tversky_eps", 1e-6),
+        )
+        lam = float(cfg.get("tversky_weight", 0.6))  # 0..1
+        def _crit(logits, target):
+            return (1.0 - lam) * ce(logits, target) + lam * tv(logits, target)
+        return _crit
+    else:
+        raise ValueError(f"Unknown loss: {loss_name}")
+
 
 class SegTrainer:
     def __init__(self, cfg_path: str):
@@ -115,9 +157,11 @@ class SegTrainer:
 
         # -------- optim / loss ----------
         params = list(self.head.parameters()) + list(lora_parameters(self.backbone))
+        self.trainable_params = params  # <-- add this
         self.optimizer = torch.optim.AdamW(params, lr=self.cfg["lr"], weight_decay=self.cfg["weight_decay"])
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = build_criterion(self.cfg, device=self.device)
         self.epochs = int(self.cfg["epochs"])
+        self.clip_grad_norm = float(self.cfg.get("clip_grad_norm", 0.0))
 
         # -------- AMP (device-aware) ----------
         self.use_amp = bool(self.cfg.get("amp", True))
@@ -143,7 +187,11 @@ class SegTrainer:
 
     def _step(self, batch, train=True):
         imgs, masks = batch
-        imgs = imgs.to(self.device, non_blocking=True)
+        # Ensure target dtype is long indices for CE
+        if masks.dtype != torch.long:
+            masks = masks.long()
+
+        imgs  = imgs.to(self.device, non_blocking=True)
         masks = masks.to(self.device, non_blocking=True)
 
         out_hw = masks.shape[-2:]
@@ -154,16 +202,32 @@ class SegTrainer:
             logits = self.head(feats, out_hw)          # (B, K, H, W)
             loss   = self.criterion(logits, masks)
 
+        # Quick NaN/Inf guard before backward
+        if not torch.isfinite(loss):
+            print("Non-finite loss encountered; skipping step.")
+            return float("nan"), logits
+
         if train:
-            if self.scaler is not None:
+            if self.scaler is not None and self.use_amp:
+                # AMP path
                 self.scaler.scale(loss).backward()
+
+                # Unscale before clipping so clip sees true grads
+                if self.clip_grad_norm and self.clip_grad_norm > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.trainable_params, max_norm=self.clip_grad_norm)
+
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
+                # FP32 path
                 loss.backward()
+                if self.clip_grad_norm and self.clip_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.trainable_params, max_norm=self.clip_grad_norm)
                 self.optimizer.step()
 
         return loss.item(), logits
+
 
     @torch.no_grad()
     def _colorize_mask(self, m: torch.Tensor, num_classes: int):
