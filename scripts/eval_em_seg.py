@@ -4,6 +4,9 @@ import argparse, yaml, torch, numpy as np
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import csv
+import os
+import mlflow
+from mlflow import MlflowClient
 
 from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.utils.transforms import em_seg_transforms
@@ -179,20 +182,43 @@ def main():
     bb.load_state_dict(bb_state, strict=False)
 
     bb.eval(); head.eval()
+    # --- compute metrics ---
     iou, dice, iou_f, dice_f = eval_loop(bb, head, loader, device, cfg["num_classes"], out_dir=run_dir)
 
-    # save CSV
+    # --- write CSV BEFORE logging to MLflow ---
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["class","IoU","Dice"])
         for k,(i,d) in enumerate(zip(iou, dice)):
             w.writerow([k, f"{i:.6f}", f"{d:.6f}"])
-        # foreground-collapsed row
         w.writerow(["foreground", f"{iou_f:.6f}", f"{dice_f:.6f}"])
-        # mean over classes (same as before)
         w.writerow(["mean", f"{iou.mean():.6f}", f"{dice.mean():.6f}"])
     print(f"Saved metrics → {out_csv}")
+
+    # --- single MLflow run ---
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "file:/home/cfuste/GitHub/DINO-EM-PEFT/mlruns"))
+    mlflow.set_experiment(os.environ.get("MLFLOW_EXPERIMENT_NAME", "default"))
+
+    with mlflow.start_run(run_name="eval") as run:
+        # force hydration and print where it’s going
+        mlflow.log_param("phase", "eval")
+        mlflow.log_metric("canary/step0", 0.0, step=0)
+        print("[mlflow:eval] cwd=", Path.cwd().as_posix(),
+              "tracking_uri=", mlflow.get_tracking_uri(),
+              "run_id=", run.info.run_id,
+              "artifact_uri=", mlflow.get_artifact_uri())
+
+        # metrics
+        mlflow.log_metric("test/iou_f",  float(iou_f))
+        mlflow.log_metric("test/Dice_fg", float(dice_f))
+
+        # artifacts
+        mlflow.log_artifact(str(out_csv), artifact_path="eval")
+        prev_dir = run_dir / "eval_previews"
+        if prev_dir.exists():
+            mlflow.log_artifacts(str(prev_dir), artifact_path="eval_previews")
+
 
 
 if __name__ == "__main__":

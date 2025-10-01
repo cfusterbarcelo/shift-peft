@@ -7,7 +7,7 @@ out_dir: runs/exp_baseline_head_only
 
 # ---- model ----
 dino_size: base
-img_size: [448, 448]
+img_size: [518, 518]
 num_classes: 2
 
 # ---- LoRA (disabled) ----
@@ -18,7 +18,7 @@ lora_alpha: 32
 
 # ---- training ----
 batch_size: 4
-epochs: 30
+epochs: 40
 lr: 0.001                # head-only can use a higher LR than LoRA
 weight_decay: 0.0001
 num_workers: 8
