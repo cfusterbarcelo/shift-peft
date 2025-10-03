@@ -14,7 +14,7 @@ from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.utils.transforms import em_seg_transforms
 from dino_peft.models.backbone_dinov2 import DINOv2FeatureExtractor
 from dino_peft.models.lora import inject_lora, lora_parameters
-from dino_peft.models.head_seg1x1 import SegHead1x1
+from dino_peft.models.head_seg1x1 import SegHeadDeconv
 
 
 def pick_device(cfg_device: str | None):
@@ -65,7 +65,7 @@ def build_criterion(cfg, device):
             return (1.0 - lam) * ce(logits, target) + lam * tv(logits, target)
         return _crit
     elif loss_name == "dice":
-        return monai.losses.DiceLoss(to_onehot_y=False, softmax=True)
+        return monai.losses.DiceLoss(to_onehot_y=False, sigmoid=True)
     else:
         raise ValueError(f"Unknown loss: {loss_name}")
 
@@ -146,7 +146,7 @@ class SegTrainer:
         # -------- model ----------
         self.backbone = DINOv2FeatureExtractor(size=self.cfg["dino_size"], device=str(self.device))
         in_ch = self.backbone.embed_dim
-        self.head = SegHead1x1(in_ch, self.cfg["num_classes"]).to(self.device)
+        self.head = SegHeadDeconv(in_ch=in_ch, num_classes=self.cfg["num_classes"], n_ups=4, base_ch=512).to(self.device)
 
         # -------- LoRA ----------
         self.lora_names = []

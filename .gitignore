@@ -18,6 +18,10 @@ runs/*
 *.err
 *.sbatch
 
+# Macbook Setup
+.vscode/*
+.DS_Store
+
 # Distribution / packaging
 .Python
 build/

@@ -11,9 +11,9 @@ from mlflow import MlflowClient
 from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.utils.transforms import em_seg_transforms
 from dino_peft.models.backbone_dinov2 import DINOv2FeatureExtractor
-from dino_peft.models.head_seg1x1 import SegHead1x1
+from dino_peft.models.head_seg1x1 import SegHeadDeconv
 
-# in scripts/eval_em_seg.py (replace eval_loop and add preview saving)
+
 
 from torchvision.utils import save_image, make_grid
 import torch.nn.functional as F
@@ -65,8 +65,9 @@ def eval_loop(backbone, head, loader, device, num_classes, out_dir=None, preview
     for b, (imgs, masks) in enumerate(tqdm(loader, desc="eval")):
         imgs = imgs.to(device)
         masks = masks.to(device)
-        logits = head(backbone(imgs), masks.shape[-2:])
-        pred = logits.argmax(1)  # (B,H,W)
+        feats = backbone(imgs)
+        logits = head(feats, masks.shape[-2:])
+        pred = logits.argmax(1)
 
         # Per-class stats
         for k in range(num_classes):
@@ -134,11 +135,12 @@ def _pick_device():
         return torch.device("mps")
     return torch.device("cpu")
 
-def _latest_ckpt(run_dir: Path) -> Path:
-    cks = sorted(run_dir.glob("checkpoint_ep*.pt"))
-    if not cks:
-        raise FileNotFoundError(f"No checkpoints found in {run_dir}")
-    return cks[-1]  # sorted by name epXXX; if you prefer mtime: max(cks, key=lambda p: p.stat().st_mtime)
+def best_checkpoint(run_dir) -> Path:
+    """Return runs/.../checkpoint_best.pt or raise if missing."""
+    p = Path(run_dir) / "checkpoint_best.pt"
+    if not p.exists():
+        raise FileNotFoundError(f"checkpoint_best.pt not found in {run_dir}")
+    return p
 
 def main():
     ap = argparse.ArgumentParser()
@@ -152,7 +154,7 @@ def main():
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # auto-pick checkpoint if not provided
-    ckpt_path = Path(args.ckpt).expanduser() if args.ckpt else _latest_ckpt(run_dir)
+    ckpt_path = best_checkpoint(run_dir)
     out_csv   = Path(args.out_csv).expanduser() if args.out_csv else (run_dir / "metrics_test.csv")
 
     device = _pick_device()
@@ -170,7 +172,7 @@ def main():
 
     # model
     bb = DINOv2FeatureExtractor(size=cfg["dino_size"], device=str(device))
-    head = SegHead1x1(bb.embed_dim, cfg["num_classes"]).to(device)
+    head = SegHeadDeconv(bb.embed_dim, cfg["num_classes"]).to(device)
 
     # load checkpoint (LoRA + head)
     ckpt = torch.load(ckpt_path, map_location=device)
