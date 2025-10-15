@@ -26,7 +26,7 @@ lr: 0.00005
 weight_decay: 0.0001
 num_workers: 8
 device: auto
-amp: true            # first run: stability check without AMP
+amp: false            # first run: stability check without AMP
 
 # ---- loss (CE + Tversky on foreground) ----
 loss: dice      # ce, dice, ce_tversky 
