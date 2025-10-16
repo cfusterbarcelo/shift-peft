@@ -12,6 +12,7 @@ from mlflow.tracking import MlflowClient  # <-- needed
 
 from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.utils.transforms import em_seg_transforms, denorm_imagenet
+from dino_peft.utils.viz import colorize_mask
 from dino_peft.models.backbone_dinov2 import DINOv2FeatureExtractor
 from dino_peft.models.lora import inject_lora, lora_parameters
 from dino_peft.models.head_seg1x1 import SegHeadDeconv
@@ -65,7 +66,7 @@ def build_criterion(cfg, device):
             return (1.0 - lam) * ce(logits, target) + lam * tv(logits, target)
         return _crit
     elif loss_name == "dice":
-        return monai.losses.DiceLoss(to_onehot_y=False, sigmoid=True)
+        return monai.losses.DiceLoss(softmax=True, to_onehot_y=True, include_background=True)
     else:
         raise ValueError(f"Unknown loss: {loss_name}")
 
@@ -93,7 +94,7 @@ class SegTrainer:
 
         # -------- transforms ----------
         t_train = em_seg_transforms(tuple(self.cfg["img_size"]))   # your current (deterministic) pipeline
-        t_val   = None                                             # simplest: no transform in val
+        t_val   = em_seg_transforms(tuple(self.cfg["img_size"]))                                             # simplest: no transform in val
 
         # -------- base dataset (NO transform) ----------
         base_ds = PairedDirsSegDataset(
@@ -174,6 +175,8 @@ class SegTrainer:
         params = list(self.head.parameters()) + list(lora_parameters(self.backbone))
         self.trainable_params = params
         self.optimizer = torch.optim.AdamW(params, lr=self.cfg["lr"], weight_decay=self.cfg["weight_decay"])
+        print(f"[params] trainable={sum(p.numel() for p in self.trainable_params):,}")
+        print("[warn] unexpected trainable in backbone:", [n for n,p in self.backbone.named_parameters() if p.requires_grad and "lora_" not in n][:15])
         self.criterion = build_criterion(self.cfg, device=self.device)
         self.epochs = int(self.cfg["epochs"])
         self.clip_grad_norm = float(self.cfg.get("clip_grad_norm", 0.0))
@@ -200,62 +203,6 @@ class SegTrainer:
             for n in self.lora_names:
                 f.write(n + "\n")
 
-    def _step(self, batch, train=True):
-        imgs, masks = batch
-        if masks.dtype != torch.long:
-            masks = masks.long()
-
-        imgs  = imgs.to(self.device, non_blocking=True)
-        masks = masks.to(self.device, non_blocking=True)
-
-        out_hw = masks.shape[-2:]
-        self.optimizer.zero_grad(set_to_none=True)
-
-        with self.autocast():
-            feats  = self.backbone(imgs)               # (B, C, H', W')
-            logits = self.head(feats, out_hw)          # (B, K, H, W)
-            loss   = self.criterion(logits[:,1,:,:], masks)
-
-        if not torch.isfinite(loss):
-            print("Non-finite loss encountered; skipping step.")
-            return float("nan"), logits
-
-        if train:
-            if self.scaler is not None and self.use_amp:
-                self.scaler.scale(loss).backward()
-                if self.clip_grad_norm and self.clip_grad_norm > 0:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.trainable_params, max_norm=self.clip_grad_norm)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                loss.backward()
-                if self.clip_grad_norm and self.clip_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(self.trainable_params, max_norm=self.clip_grad_norm)
-                self.optimizer.step()
-
-        return loss.item(), logits
-
-    @torch.no_grad()
-    def _colorize_mask(self, m: torch.Tensor, num_classes: int):
-        K = num_classes
-        B, H, W = m.shape
-        out = torch.zeros(B, 3, H, W, device=m.device, dtype=torch.float32)
-        if K == 2:
-            out[:, :, :, :] = 0.0
-            out[:, 0] = (m == 1).float()
-            out[:, 1] = (m == 1).float()
-            out[:, 2] = (m == 1).float()
-        else:
-            palette = torch.tensor([
-                [0,0,0], [1,0,0], [0,1,0], [0,0,1], [1,1,0],
-                [1,0,1], [0,1,1], [1,0.5,0], [0.5,0,1], [0.5,0.5,0.5]
-            ], device=m.device, dtype=torch.float32)
-            for k in range(min(K, palette.shape[0])):
-                maskk = (m == k).unsqueeze(1).float()
-                out += maskk * palette[k].view(1,3,1,1)
-            out.clamp_(0,1)
-        return out
 
     @torch.no_grad()
     def _save_preview(self, imgs, logits, masks, step_tag: str):
@@ -268,8 +215,8 @@ class SegTrainer:
 
         imgs_vis = denorm_imagenet(imgs_cpu).clamp(0,1)
 
-        pred_rgb = self._colorize_mask(preds_cpu, self.cfg["num_classes"])
-        gt_rgb   = self._colorize_mask(gts_cpu,   self.cfg["num_classes"])
+        pred_rgb = self.colorize_mask(preds_cpu, self.cfg["num_classes"])
+        gt_rgb   = self.colorize_mask(gts_cpu,   self.cfg["num_classes"])
 
         H, W = gts_cpu.shape[-2:]
         if imgs_vis.shape[-2:] != (H, W):
@@ -350,16 +297,29 @@ class SegTrainer:
 
             # --------- training loop ----------
             for epoch in range(1, self.epochs + 1):
-                # TRAIN
                 self.backbone.train(False)
                 self.head.train(True)
 
                 running = 0.0
-                for batch in self.train_loader:
-                    loss, _ = self._step(batch, train=True)
-                    if isinstance(loss, float) and (loss != loss):  # NaN
-                        continue
-                    running += loss
+                # TRAIN
+                for imgs, masks in self.train_loader:
+                    masks = masks.long()
+                    imgs = imgs.to(self.device, non_blocking=True)
+                    masks = masks.to(self.device, non_blocking=True)
+
+                    self.optimizer.zero_grad(set_to_none=True)
+
+                    feats = self.backbone(imgs)               # (B, C, H', W')
+                    logits = self.head(feats, out_hw=masks.shape[-2:])  #
+
+                    loss = self.criterion(logits, masks.unsqueeze(1)) # From (B, H, W) to (B, K, H, W)  as expected by Monai DiceLoss
+                    
+                    # backward
+                    loss.backward()
+                    if self.clip_grad_norm and self.clip_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(self.trainable_params, max_norm=self.clip_grad_norm)
+                    self.optimizer.step()
+                    running += loss.item()
                 avg_train = running / max(1, len(self.train_loader))
 
                 # VAL
@@ -369,11 +329,16 @@ class SegTrainer:
                 bg_gt_total = bg_pred_total = 0
 
                 with torch.no_grad():
-                    for i, batch in enumerate(self.val_loader):
-                        loss, logits = self._step(batch, train=False)
-                        val_loss += loss
+                    for i, (imags, masks) in enumerate(self.val_loader):
+                        masks = masks.long()
+                        imgs = imags.to(self.device, non_blocking=True)
+                        masks = masks.to(self.device, non_blocking=True)
 
-                        imgs, masks = batch
+                        feats = self.backbone(imgs)
+                        logits = self.head(feats, out_hw=masks.shape[-2:])
+                        loss = self.criterion(logits, masks.unsqueeze(1)) # From (B, H, W) to (B, K, H, W)  as expected by Monai DiceLoss
+                        val_loss += float(loss)
+
                         pred = logits.argmax(1)
                         fg_gt_total  += (masks == 1).sum().item()
                         fg_pred_total+= (pred  == 1).sum().item()
@@ -385,7 +350,6 @@ class SegTrainer:
 
                 val_loss /= max(1, len(self.val_loader))
                 print(f"[epoch {epoch}/{self.epochs}] train_loss={avg_train:.4f}  val_loss={val_loss:.4f}")
-                print(f"          val FG: GT={fg_gt_total}  PRED={fg_pred_total} | BG: GT={bg_gt_total}  PRED={bg_pred_total}")
 
                 # MLflow scalars
                 try:

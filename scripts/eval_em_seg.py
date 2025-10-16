@@ -10,32 +10,12 @@ from mlflow import MlflowClient
 
 from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.utils.transforms import em_seg_transforms, denorm_imagenet
+from dino_peft.utils.viz import colorize_mask
 from dino_peft.models.backbone_dinov2 import DINOv2FeatureExtractor
 from dino_peft.models.head_seg1x1 import SegHeadDeconv
 
-
-
 from torchvision.utils import save_image, make_grid
 import torch.nn.functional as F
-
-@torch.no_grad()
-def colorize_mask(m: torch.Tensor, num_classes: int):
-    B, H, W = m.shape
-    out = torch.zeros(B, 3, H, W, device=m.device, dtype=torch.float32)
-    if num_classes == 2:
-        out[:, 0] = (m == 1).float()
-        out[:, 1] = (m == 1).float()
-        out[:, 2] = (m == 1).float()
-    else:
-        palette = torch.tensor([
-            [0,0,0],[1,0,0],[0,1,0],[0,0,1],[1,1,0],
-            [1,0,1],[0,1,1],[1,0.5,0],[0.5,0,1],[0.5,0.5,0.5]
-        ], device=m.device, dtype=torch.float32)
-        for k in range(min(num_classes, palette.shape[0])):
-            maskk = (m == k).unsqueeze(1).float()
-            out += maskk * palette[k].view(1,3,1,1)
-        out.clamp_(0,1)
-    return out
 
 @torch.no_grad()
 def eval_loop(backbone, head, loader, device, num_classes, out_dir=None, preview_n=6):
@@ -202,7 +182,7 @@ def main():
     print(f"Saved metrics → {out_csv}")
 
     # --- single MLflow run ---
-    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "file:/home/cfuste/GitHub/DINO-EM-PEFT/mlruns"))
+    mlflow.set_tracking_uri(f"file:{(Path.cwd()/'mlruns').as_posix()}")
     mlflow.set_experiment(os.environ.get("MLFLOW_EXPERIMENT_NAME", "default"))
 
     with mlflow.start_run(run_name="eval") as run:
