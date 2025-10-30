@@ -174,20 +174,31 @@ def main():
         binarize=bool(cfg.get("binarize", True)),
         binarize_threshold=int(cfg.get("binarize_threshold", 128)),
     )
+
     loader = DataLoader(ds, batch_size=1, shuffle=False, num_workers=4,
                         pin_memory=(device.type == "cuda"))
 
     # model
-    bb = DINOv2FeatureExtractor(size=cfg["dino_size"], device=str(device))
+    bb = DINOv2FeatureExtractor(
+        size=cfg["dino_size"],
+        device=str(device),
+        use_lora=bool(cfg.get("use_lora", True)),
+        lora_rank=int(cfg.get("lora_rank", 16)),
+        lora_alpha=int(cfg.get("lora_alpha", 16)),
+        lora_dropout=float(cfg.get("lora_dropout", 0.0)),
+    )
     head = SegHeadDeconv(bb.embed_dim, cfg["num_classes"]).to(device)
 
     # load checkpoint (LoRA + head)
     ckpt = torch.load(ckpt_path, map_location=device)
     head.load_state_dict(ckpt["head"])
     bb_state = bb.state_dict()
-    for k,v in ckpt.get("backbone_lora", {}).items():
+    lora_dict = ckpt.get("backbone_lora", {})
+    matched = 0
+    for k, v in lora_dict.items():
         if k in bb_state:
             bb_state[k] = v
+            matched += 1
     bb.load_state_dict(bb_state, strict=False)
 
     bb.eval(); head.eval()
