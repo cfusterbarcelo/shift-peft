@@ -23,3 +23,19 @@ def denorm_imagenet(x: torch.Tensor) -> torch.Tensor:
     mean = x.new_tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
     std  = x.new_tensor(IMAGENET_STD).view(1, 3, 1, 1)
     return x * std + mean
+
+def em_dino_unsup_transforms(img_size: int = 518):
+    """
+    Eval-time transform for DINO unsupervised analysis:
+    - Resize to (img_size, img_size) (must be multiple of patch size=14)
+    - ToTensor
+    - ImageNet normalization
+    """
+    if img_size % 14 != 0:
+        raise ValueError(f"img_size must be a multiple of 14 for DINO, got {img_size}")
+
+    return T.Compose([
+        T.Resize((img_size, img_size)),
+        T.ToTensor(),
+        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+    ])
