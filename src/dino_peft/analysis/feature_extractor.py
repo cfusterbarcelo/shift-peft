@@ -17,13 +17,13 @@ def extract_features_from_folder(
     batch_size: int = 16,
     num_workers: int = 4,
     device: str = "cuda",
-) -> torch.Tensor:
+):
     """
     Run DINOv2 feature extractor on all images in a folder and return .npz file with features.
 
     Assumptions:
     - Images are already in the size/formad used for EM segmentation.
-    - em_seg_transforms applies ToTensor and ImageNet normalization.
+    - em_dino_unsup_transforms applies ToTensor and ImageNet normalization.
 
     Args:
         data_dir: path to folder with images.
@@ -37,8 +37,8 @@ def extract_features_from_folder(
         image_paths:         [N] object array of strings (paths to images)
         dataset_ids:         [N] int32 (0=lucchi, 1=droso)
         dataset_names:       [N] object array of strings ("lucchi" or "droso")
-        dataset_name_to_id:  [K]    object array of "name:id" strings
-        size:                [1]    object array size of the DINO model, e.g. ["base"]
+        dataset_name_to_id:  [K] object array of "name:id" strings
+        size:                [1] object array size of the DINO model, e.g. ["base"]
     """
     data_dir = Path(data_dir)
 
@@ -89,11 +89,11 @@ def extract_features_from_folder(
             [f"{name}:{idx}" for name, idx in name_to_id.items()], dtype=object
         )  
 
-        features_np = np.concatenate(all_features, axis=0)  # (N, C)
-        unique_names = sorted(set(all_dataset_names))
-        name_to_id = {name: idx for idx, name in enumerate(unique_names)}
-        dataset_ids = np.array([name_to_id[n] for n in all_dataset_names], dtype=np.int32)
-        dataset_name_to_id = np.array([f"{name}:{idx}" for name, idx in name_to_id.items()], dtype=object)
+    features_np = np.concatenate(all_features, axis=0)  # (N, C)
+    unique_names = sorted(set(all_dataset_names))
+    name_to_id = {name: idx for idx, name in enumerate(unique_names)}
+    dataset_ids = np.array([name_to_id[n] for n in all_dataset_names], dtype=np.int32)
+    dataset_name_to_id = np.array([f"{name}:{idx}" for name, idx in name_to_id.items()], dtype=object)
 
 
     return {

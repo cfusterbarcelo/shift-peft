@@ -158,8 +158,8 @@ def scatter_2d(
             name = label_names.get(int(lbl), str(lbl)) if label_names else str(lbl)
             ax.scatter(xy[mask, 0], xy[mask, 1], color=cmap(i % cmap.N), alpha=alpha, s=s, label=name)
 
-    ax.set_xlabel("PC 1")
-    ax.set_ylabel("PC 2")
+    ax.set_xlabel("D1")
+    ax.set_ylabel("D2")
     if title:
         ax.set_title(title)
     if labels is not None:

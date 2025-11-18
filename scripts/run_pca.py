@@ -40,7 +40,6 @@ def main():
     # UMAP Config
     umap_cfg = cfg.get("umap", {})
     umap_enabled = bool(umap_cfg.get("enabled", False))
-    umap_output = Path(umap_cfg.get("output_path", input_path.with_name(input_path.stem + "_umap.png")))
     pre_umap_dim = int(umap_cfg.get("pca_dim", 50))  # PCA dim before UMAP
     umap_params = {
         "n_neighbors": int(umap_cfg.get("n_neighbors", 15)),
@@ -108,7 +107,7 @@ def main():
             l2norm=l2norm,
         )
         _, umap_emb = run_umap(feats_pre, **umap_params)
-        title_umap = f"DINO {dino_size} PCA{pre_umap_dim}→UMAP (nn={umap_params['n_neighbors']}, md={umap_params['min_dist']})" if dino_size else f"PCA{pre_umap_dim}→UMAP (nn={...})"
+        title_umap = f"DINO {dino_size} PCA{pre_umap_dim}→UMAP (nn={umap_params['n_neighbors']}, md={umap_params['min_dist']})" if dino_size else f"PCA{pre_umap_dim}→UMAP"
         scatter_2d(
             xy=umap_emb[:, :2],
             labels=bundle.dataset_ids,

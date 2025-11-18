@@ -25,6 +25,7 @@ def load_feature_npz(path: Path | str) -> FeatureBundle:
         image_paths = data.get("image_paths")
         dataset_name_to_id = data.get("dataset_name_to_id")
         dino_size = data.get("dino_size")
+        
         if dino_size is not None:
             try:
                 dino_size = dino_size.tolist()[0]

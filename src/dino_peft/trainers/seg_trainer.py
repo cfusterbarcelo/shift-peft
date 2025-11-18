@@ -9,7 +9,6 @@ from torch.utils.data import DataLoader, random_split
 import torch.nn.functional as F
 from mlflow.tracking import MlflowClient 
 
-from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.datasets.lucchi_seg import LucchiSegDataset
 from dino_peft.utils.transforms import em_seg_transforms, denorm_imagenet
 from dino_peft.utils.viz import colorize_mask
