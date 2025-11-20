@@ -14,7 +14,11 @@ runtime:
   # On the Mac, keep it small-ish and CPU-friendly
   batch_size: 8
   num_workers: 2
-  img_size: 518
+  img_size:
+    mode: longest_edge
+    target: 1022
+    patch_multiple: 14
+    rounding: floor
 
   # "auto" = use cuda if available else cpu. You can also force "cpu" or "cuda".
   device: "auto"

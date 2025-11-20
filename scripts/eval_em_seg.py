@@ -21,6 +21,62 @@ from dino_peft.models.lora import inject_lora
 from dino_peft.utils.paths import setup_run_dir, update_metrics
 
 
+def pad_collate(batch):
+    imgs, masks, names = zip(*batch)
+    max_h = max(img.shape[-2] for img in imgs)
+    max_w = max(img.shape[-1] for img in imgs)
+    padded_imgs = []
+    padded_masks = []
+    for img, mask in zip(imgs, masks):
+        c = img.shape[0]
+        h, w = img.shape[-2], img.shape[-1]
+        pad_img = img.new_zeros((c, max_h, max_w))
+        pad_img[:, :h, :w] = img
+        padded_imgs.append(pad_img)
+
+        mh, mw = mask.shape[-2], mask.shape[-1]
+        pad_mask = mask.new_full((max_h, max_w), 0)
+        pad_mask[:mh, :mw] = mask
+        padded_masks.append(pad_mask)
+    return torch.stack(padded_imgs), torch.stack(padded_masks), list(names)
+
+
+def build_dataset_from_cfg(cfg, split: str, transform):
+    dataset_cfg = cfg.get("dataset", {})
+    dataset_type = str(dataset_cfg.get("type", "lucchi")).lower()
+    dataset_params = dict(dataset_cfg.get("params", {}))
+    dataset_map = {
+        "lucchi": LucchiSegDataset,
+        "paired": PairedDirsSegDataset,
+    }
+    DatasetClass = dataset_map.get(dataset_type)
+    if DatasetClass is None:
+        raise ValueError(
+            f"Unsupported dataset.type '{dataset_type}'. "
+            "Use 'lucchi' or 'paired'."
+        )
+    if dataset_type == "lucchi":
+        dataset_params.setdefault("recursive", False)
+        dataset_params.setdefault("zfill_width", 4)
+        dataset_params.setdefault("image_prefix", "mask")
+
+    kwargs = {
+        "img_size": cfg["img_size"],
+        "to_rgb": True,
+        "transform": transform,
+        "binarize": bool(cfg.get("binarize", True)),
+        "binarize_threshold": int(cfg.get("binarize_threshold", 128)),
+    }
+    kwargs.update(dataset_params)
+
+    img_dir_key = f"{split}_img_dir"
+    mask_dir_key = f"{split}_mask_dir"
+    if img_dir_key not in cfg or mask_dir_key not in cfg:
+        raise KeyError(f"Missing {img_dir_key}/{mask_dir_key} in config for split '{split}'")
+
+    return DatasetClass(cfg[img_dir_key], cfg[mask_dir_key], **kwargs)
+
+
 @torch.no_grad()
 def eval_loop(
     backbone, head, loader, device, num_classes,
@@ -179,25 +235,17 @@ def main():
     device = _pick_device()
 
     # dataset (test split from cfg)
-    t = em_seg_transforms(tuple(cfg["img_size"]))
-    # ds = PairedDirsSegDataset(
-    #     cfg["test_img_dir"], cfg["test_mask_dir"],
-    #     img_size=cfg["img_size"], to_rgb=True, transform=t,
-    #     binarize=bool(cfg.get("binarize", True)),
-    #     binarize_threshold=int(cfg.get("binarize_threshold", 128)),
-    # )
-    ds = LucchiSegDataset(
-        cfg["test_img_dir"], cfg["test_mask_dir"],
-        img_size=cfg["img_size"], to_rgb=True, transform=t,
-        binarize=bool(cfg.get("binarize", True)),
-        binarize_threshold=int(cfg.get("binarize_threshold", 128)),
-        recursive=False,
-        zfill_width=4,
-        image_prefix="mask",
-    )
+    t = em_seg_transforms()
+    ds = build_dataset_from_cfg(cfg, split="test", transform=t)
 
-    loader = DataLoader(ds, batch_size=1, shuffle=False, num_workers=4,
-                        pin_memory=(device.type == "cuda"))
+    loader = DataLoader(
+        ds,
+        batch_size=1,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=(device.type == "cuda"),
+        collate_fn=pad_collate,
+    )
 
     # model
     bb = DINOv2FeatureExtractor(size=cfg["dino_size"], device=str(device))

@@ -68,7 +68,7 @@ def main() -> None:
     model_cfg = cfg.get("model", {})
     runtime_cfg = cfg.get("runtime", {})
 
-    img_size = int(runtime_cfg.get("img_size", 518))
+    img_size_cfg = runtime_cfg.get("img_size", 518)
     data_dir = data_cfg.get("data_dir")
     if data_dir is None:
         raise ValueError("Config must define data.data_dir.")
@@ -89,7 +89,7 @@ def main() -> None:
             {
                 "task_type": task_type,
                 "device": device,
-                "img_size": img_size,
+                "img_size": img_size_cfg,
                 "dino_size": dino_size,
                 "data_dir": data_dir,
             },
@@ -109,11 +109,12 @@ def main() -> None:
     print(f"[extract_features] batch_size = {batch_size}")
     print(f"[extract_features] num_workers= {num_workers}")
     print(f"[extract_features] device     = {device}")
+    print(f"[extract_features] img_size   = {img_size_cfg}")
 
     features_dict = extract_features_from_folder(
         data_dir=data_dir,
         dino_size=dino_size,
-        img_size=img_size,
+        img_size=img_size_cfg,
         batch_size=batch_size,
         num_workers=num_workers,
         device=device,

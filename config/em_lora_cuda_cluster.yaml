@@ -11,7 +11,16 @@ task_type: "seg"
 
 # ---- model / backbone ----
 dino_size: base
-img_size: [518, 518]
+img_size:
+  mode: longest_edge
+  target: 1022
+  patch_multiple: 14
+  rounding: floor
+dataset:
+  type: paired
+  params:
+    pair_mode: "stem"
+    recursive: false
 num_classes: 2
 
 # ---- MLflow ----

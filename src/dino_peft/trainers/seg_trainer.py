@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from mlflow.tracking import MlflowClient 
 
 from dino_peft.datasets.lucchi_seg import LucchiSegDataset
+from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.utils.transforms import em_seg_transforms, denorm_imagenet
 from dino_peft.utils.viz import colorize_mask
 from dino_peft.utils.plots import save_triptych_grid
@@ -104,38 +105,55 @@ class SegTrainer:
             {
                 "task_type": task_type,
                 "device": str(self.device),
-                "img_size": tuple(self.cfg.get("img_size", [])),
+                "img_size": self.cfg.get("img_size"),
                 "dino_size": self.cfg.get("dino_size"),
             },
         )
 
+        # -------- dataset selection ----------
+        dataset_cfg = self.cfg.get("dataset", {})
+        dataset_type = str(dataset_cfg.get("type", "lucchi")).lower()
+        dataset_params = dict(dataset_cfg.get("params", {}))
+        dataset_map = {
+            "lucchi": LucchiSegDataset,
+            "paired": PairedDirsSegDataset,
+        }
+        DatasetClass = dataset_map.get(dataset_type)
+        if DatasetClass is None:
+            raise ValueError(
+                f"Unsupported dataset.type '{dataset_type}'. "
+                "Use 'lucchi' or 'paired'."
+            )
+        if dataset_type == "lucchi":
+            dataset_params.setdefault("recursive", False)
+            dataset_params.setdefault("zfill_width", 4)
+            dataset_params.setdefault("image_prefix", "mask")
+
+        def _build_dataset(img_dir, mask_dir, transform):
+            kwargs = {
+                "img_size": self.cfg["img_size"],
+                "to_rgb": True,
+                "transform": transform,
+                "binarize": bool(self.cfg.get("binarize", True)),
+                "binarize_threshold": int(self.cfg.get("binarize_threshold", 128)),
+            }
+            kwargs.update(dataset_params)
+            return DatasetClass(
+                img_dir,
+                mask_dir,
+                **kwargs,
+            )
+
         # -------- transforms ----------
-        t_train = em_seg_transforms(tuple(self.cfg["img_size"]))   # your current (deterministic) pipeline
-        t_val   = em_seg_transforms(tuple(self.cfg["img_size"]))                                             # simplest: no transform in val
+        t_train = em_seg_transforms()   # deterministic pipeline (resize handled in dataset)
+        t_val   = em_seg_transforms()
 
         # -------- base dataset (NO transform) ----------
-        base_ds = LucchiSegDataset(
+        base_ds = _build_dataset(
             self.cfg["train_img_dir"],
             self.cfg["train_mask_dir"],
-            img_size=self.cfg["img_size"],
-            to_rgb=True,
-            transform=None,             # no transform here
-            binarize=bool(self.cfg.get("binarize", True)),
-            binarize_threshold=int(self.cfg.get("binarize_threshold", 128)),
-            recursive=False,
-            zfill_width=4,
-            image_prefix="mask",
+            transform=None,
         )
-        
-        #  base_ds = PairedDirsSegDataset(
-        #     self.cfg["train_img_dir"], 
-        #     self.cfg["train_mask_dir"],
-        #     img_size=self.cfg["img_size"], 
-        #     to_rgb=True, 
-        #     transform=None,
-        #     binarize=bool(self.cfg.get("binarize", True)),
-        #     binarize_threshold=int(self.cfg.get("binarize_threshold", 128)),
-        # )
 
         # -------- 10% validation split ----------
         val_ratio = float(self.cfg.get("val_ratio", 0.1))
@@ -147,23 +165,11 @@ class SegTrainer:
         train_idx, val_idx = perm[:n_train], perm[n_train:]
 
         def make_subset_dataset(src_ds, index_list, transform):
-            ds = LucchiSegDataset(
-            self.cfg["train_img_dir"], self.cfg["train_mask_dir"],
-            img_size=self.cfg["img_size"], to_rgb=True, transform=t_train,
-            binarize=bool(self.cfg.get("binarize", True)),
-            binarize_threshold=int(self.cfg.get("binarize_threshold", 128)),
-            recursive=False,     # set True if Lucchi has subfolders
-            zfill_width=4,       # "7" -> "0007"
-            image_prefix="mask", # "mask0007" -> "0007"
+            ds = _build_dataset(
+                self.cfg["train_img_dir"],
+                self.cfg["train_mask_dir"],
+                transform=transform,
             )
-            
-            # ds = PairedDirsSegDataset(
-            #     self.cfg["train_img_dir"], self.cfg["train_mask_dir"],
-            #     img_size=self.cfg["img_size"], to_rgb=True, transform=transform,
-            #     binarize=bool(self.cfg.get("binarize", True)),
-            #     binarize_threshold=int(self.cfg.get("binarize_threshold", 128)),
-            # )
-            
             ds.pairs = [src_ds.pairs[i] for i in index_list]
             return ds
 
@@ -179,6 +185,7 @@ class SegTrainer:
             shuffle=True,
             num_workers=self.cfg["num_workers"],
             pin_memory=pin,
+            collate_fn=self._pad_collate,
         )
         self.val_loader = DataLoader(
             self.val_ds,
@@ -186,6 +193,7 @@ class SegTrainer:
             shuffle=False,
             num_workers=self.cfg["num_workers"],
             pin_memory=pin,
+            collate_fn=self._pad_collate,
         )
 
         # -------- model ----------
@@ -242,6 +250,28 @@ class SegTrainer:
             for n in self.lora_names:
                 f.write(n + "\n")
 
+    @staticmethod
+    def _pad_collate(batch):
+        imgs, masks, names = zip(*batch)
+        max_h = max(img.shape[-2] for img in imgs)
+        max_w = max(img.shape[-1] for img in imgs)
+        padded_imgs = []
+        padded_masks = []
+        for img, mask in zip(imgs, masks):
+            c = img.shape[0]
+            h, w = img.shape[-2], img.shape[-1]
+            pad_img = img.new_zeros((c, max_h, max_w))
+            pad_img[:, :h, :w] = img
+            padded_imgs.append(pad_img)
+
+            mh, mw = mask.shape[-2], mask.shape[-1]
+            pad_mask = mask.new_full((max_h, max_w), 0)
+            pad_mask[:mh, :mw] = mask
+            padded_masks.append(pad_mask)
+        imgs_tensor = torch.stack(padded_imgs)
+        masks_tensor = torch.stack(padded_masks)
+        return imgs_tensor, masks_tensor, list(names)
+
     # ---------- MLflow helpers ----------
     def _resolve_mlflow_tracking(self):
         # Prefer env vars; fallback to defaults
@@ -266,7 +296,16 @@ class SegTrainer:
 
         tracking_uri, exp_name = self._resolve_mlflow_tracking()
 
-        run_name = f"{self.cfg.get('dino_size','?')}_img{self.cfg['img_size'][0]}_{'lora' if self.cfg.get('use_lora',True) else 'head'}"
+        img_tag = self.cfg.get("img_size")
+        if isinstance(img_tag, (list, tuple)) and img_tag:
+            img_tag_str = f"{img_tag[0]}x{img_tag[1]}" if len(img_tag) > 1 else str(img_tag[0])
+        elif isinstance(img_tag, dict):
+            tgt = img_tag.get("target") or img_tag.get("target_long_edge")
+            mode = img_tag.get("mode", "var")
+            img_tag_str = f"{mode}-{tgt}" if tgt else mode
+        else:
+            img_tag_str = str(img_tag)
+        run_name = f"{self.cfg.get('dino_size','?')}_img{img_tag_str}_{'lora' if self.cfg.get('use_lora',True) else 'head'}"
 
         # === Everything MLflow happens here ===
         mlflow.set_experiment(self.cfg.get("mlflow_experiment_name", "default")) 
