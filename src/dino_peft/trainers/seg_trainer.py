@@ -16,6 +16,7 @@ from dino_peft.utils.plots import save_triptych_grid
 from dino_peft.models.backbone_dinov2 import DINOv2FeatureExtractor
 from dino_peft.models.lora import inject_lora, lora_parameters
 from dino_peft.models.head_seg1x1 import SegHeadDeconv
+from dino_peft.utils.paths import setup_run_dir, write_run_info, update_metrics
 
 
 def pick_device(cfg_device: str | None):
@@ -89,8 +90,24 @@ class SegTrainer:
         self.device = pick_device(self.cfg.get("device", "auto"))
         print(">> Using device:", self.device)
 
-        self.out_dir = Path(self.cfg["out_dir"])
-        self.out_dir.mkdir(parents=True, exist_ok=True)
+        task_type = self.cfg.get("task_type", "seg")
+        self.out_dir = setup_run_dir(
+            self.cfg,
+            task_type=task_type,
+            subdirs=("logs", "ckpts", "figs", "figs/previews"),
+        )
+        self.ckpt_dir = self.out_dir / "ckpts"
+        self.fig_dir = self.out_dir / "figs"
+        self.previews_dir = self.fig_dir / "previews"
+        write_run_info(
+            self.out_dir,
+            {
+                "task_type": task_type,
+                "device": str(self.device),
+                "img_size": tuple(self.cfg.get("img_size", [])),
+                "dino_size": self.cfg.get("dino_size"),
+            },
+        )
 
         # -------- transforms ----------
         t_train = em_seg_transforms(tuple(self.cfg["img_size"]))   # your current (deterministic) pipeline
@@ -221,8 +238,6 @@ class SegTrainer:
             self.autocast = lambda: autocast(device_type="cpu", enabled=False)
 
         # -------- save config & lora list ----------
-        with open(self.out_dir / "config_used.yaml", "w") as f:
-            yaml.safe_dump(self.cfg, f)
         with open(self.out_dir / "lora_layers.txt", "w") as f:
             for n in self.lora_names:
                 f.write(n + "\n")
@@ -243,8 +258,11 @@ class SegTrainer:
 
     def train(self):
         best_val = float('inf')
-        best_path = self.out_dir / "checkpoint_best.pt"
-        last_path = self.out_dir / "checkpoint_last.pt"
+        best_epoch = 0
+        val_loss = float('inf')
+        avg_train = float('inf')
+        best_path = self.ckpt_dir / "best_model.pt"
+        last_path = self.ckpt_dir / "last_model.pt"
 
         tracking_uri, exp_name = self._resolve_mlflow_tracking()
 
@@ -344,7 +362,7 @@ class SegTrainer:
 
                         if i == 0:
                             # ---- Save a labeled triptych (first batch only) ----
-                            grid_dir = self.out_dir / "previews"
+                            grid_dir = self.previews_dir
                             grid_dir.mkdir(parents=True, exist_ok=True)
 
                             # Show up to K samples
@@ -413,6 +431,7 @@ class SegTrainer:
 
                 if val_loss < best_val:
                     best_val = float(val_loss)
+                    best_epoch = epoch
                     torch.save(ckpt, best_path)
                     print(f"[ckpt] NEW BEST -> {best_path.name} (val_loss={best_val:.4f})")
                     mlflow.log_metric("val/best_loss", best_val, step=epoch)
@@ -420,7 +439,7 @@ class SegTrainer:
                 # upload previews periodically
                 try:
                     if epoch % 5 == 0:
-                        mlflow.log_artifacts(str(self.out_dir / "previews"), artifact_path="previews")
+                        mlflow.log_artifacts(str(self.previews_dir), artifact_path="previews")
                 except Exception as e:
                     print("[mlflow] preview artifact upload skipped:", e)
 
@@ -430,3 +449,15 @@ class SegTrainer:
             except Exception as e:
                 print("[mlflow] final artifact upload skipped:", e)
         # context manager will end the run for us
+        update_metrics(
+            self.out_dir,
+            "train",
+            {
+                "best_val_loss": float(best_val),
+                "best_epoch": int(best_epoch),
+                "final_val_loss": float(val_loss),
+                "final_train_loss": float(avg_train),
+                "epochs": int(self.epochs),
+                "seed": int(self.seed),
+            },
+        )

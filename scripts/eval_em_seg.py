@@ -17,7 +17,8 @@ from dino_peft.utils.viz import colorize_mask
 from dino_peft.utils.plots import save_triptych_grid
 from dino_peft.models.backbone_dinov2 import DINOv2FeatureExtractor
 from dino_peft.models.head_seg1x1 import SegHeadDeconv
-from dino_peft.models.lora import inject_lora 
+from dino_peft.models.lora import inject_lora
+from dino_peft.utils.paths import setup_run_dir, update_metrics
 
 
 @torch.no_grad()
@@ -46,7 +47,7 @@ def eval_loop(
 
     prev_dir = None
     if out_dir is not None:
-        prev_dir = Path(out_dir) / "eval_previews"
+        prev_dir = Path(out_dir) / "figs" / "eval_previews"
         prev_dir.mkdir(parents=True, exist_ok=True)
 
     for b, (imgs, masks, names) in enumerate(tqdm(loader, desc="eval")):
@@ -145,25 +146,34 @@ def _pick_device():
     return torch.device("cpu")
 
 def best_checkpoint(run_dir) -> Path:
-    """Return runs/.../checkpoint_best.pt or raise if missing."""
-    p = Path(run_dir) / "checkpoint_best.pt"
+    """Return ckpts/best_model.pt or raise if missing."""
+    p = Path(run_dir) / "ckpts" / "best_model.pt"
     if not p.exists():
-        raise FileNotFoundError(f"checkpoint_best.pt not found in {run_dir}")
+        raise FileNotFoundError(f"best_model.pt not found in {p.parent}")
     return p
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cfg", required=True, help="Training YAML or saved config_used.yaml / config_runtime.yaml")
-    ap.add_argument("--ckpt", default="", help="Optional checkpoint path; if empty, auto-pick latest in out_dir")
-    ap.add_argument("--out_csv", default="", help="Optional metrics output; if empty, write out_dir/metrics_test.csv")
+    ap.add_argument("--ckpt", default="", help="Optional checkpoint path; if empty, auto-pick latest in run directory")
+    ap.add_argument("--out_csv", default="", help="Optional metrics output; if empty, write run_dir/metrics_test.csv")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.cfg))
-    run_dir = Path(cfg["out_dir"]).expanduser()
-    run_dir.mkdir(parents=True, exist_ok=True)
+    task_type = cfg.get("task_type", "seg")
+    if "experiment_id" in cfg and "results_root" in cfg:
+        run_dir = setup_run_dir(
+            cfg,
+            task_type=task_type,
+            subdirs=("figs", "figs/eval_previews"),
+            save_config=False,
+        )
+    else:
+        run_dir = Path(cfg["out_dir"]).expanduser()
+        (run_dir / "figs" / "eval_previews").mkdir(parents=True, exist_ok=True)
 
     # auto-pick checkpoint if not provided
-    ckpt_path = best_checkpoint(run_dir)
+    ckpt_path = Path(args.ckpt).expanduser() if args.ckpt else best_checkpoint(run_dir)
     out_csv   = Path(args.out_csv).expanduser() if args.out_csv else (run_dir / "metrics_test.csv")
 
     device = _pick_device()
@@ -227,6 +237,17 @@ def main():
         w.writerow(["foreground", f"{iou_f:.6f}", f"{dice_f:.6f}"])
         w.writerow(["mean", f"{iou.mean():.6f}", f"{dice.mean():.6f}"])
     print(f"Saved metrics → {out_csv}")
+    update_metrics(
+        run_dir,
+        "eval",
+        {
+            "mean_iou": float(iou.mean()),
+            "mean_dice": float(dice.mean()),
+            "foreground_iou": float(iou_f),
+            "foreground_dice": float(dice_f),
+            "num_classes": int(cfg["num_classes"]),
+        },
+    )
 
     # --- single MLflow run ---
     mlflow.set_tracking_uri(f"file:{(Path.cwd()/'mlruns').as_posix()}")
@@ -247,7 +268,7 @@ def main():
 
         # artifacts
         mlflow.log_artifact(str(out_csv), artifact_path="eval")
-        prev_dir = run_dir / "eval_previews"
+        prev_dir = run_dir / "figs" / "eval_previews"
         if prev_dir.exists():
             mlflow.log_artifacts(str(prev_dir), artifact_path="eval_previews")
 
