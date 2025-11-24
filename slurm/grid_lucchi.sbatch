@@ -1,6 +1,6 @@
 #!/usr/bin/bash -l
 #SBATCH --job-name=dino-grid-lucchi
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --gres=gpu:H100:1
 #SBATCH --constraint=H100
 #SBATCH --cpus-per-task=8
@@ -23,12 +23,12 @@ export TQDM_DISABLE=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export MLFLOW_TRACKING_URI="file:/scratch/$USER/mlruns_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}"
 
-BASE_CFG="config/lucchi_lora_cluster.yaml"
+BASE_CFG="config/lucchi_cluster.yaml"
 DINO_SIZES=${DINO_SIZES:-"small base large giant"}
-EPOCHS=${EPOCHS:-5}
-BATCH_DEFAULT=${BATCH_DEFAULT:-2}
-NUM_WORKERS=${NUM_WORKERS:-4}
-AMP=${AMP:-false}
+EPOCHS=${EPOCHS:-}
+BATCH_DEFAULT=${BATCH_DEFAULT:-}
+NUM_WORKERS=${NUM_WORKERS:-}
+AMP=${AMP:-}
 RUN_TAG=${RUN_TAG:-lucchigrid${SLURM_JOB_ID:-manual}}
 REPEATS=${REPEATS:-5}
 
@@ -50,8 +50,8 @@ archive_slurm_log() {
   if [ -f "$src" ]; then
     local dest="${dest_dir}/logs/${tag}_slurm.out"
     mkdir -p "$(dirname "$dest")"
-    cp "$src" "$dest"
-    echo "[log] archived slurm log → $dest"
+    mv "$src" "$dest"
+    echo "[log] moved slurm log → $dest"
   else
     echo "[log] slurm output not found at $src" >&2
   fi
@@ -64,10 +64,14 @@ import sys, yaml, tempfile, pathlib
 base, size, epochs, batch, workers, amp, tag = sys.argv[1:]
 cfg = yaml.safe_load(open(base))
 cfg["dino_size"] = size
-cfg["epochs"] = max(1, int(epochs))
-cfg["batch_size"] = max(1, int(batch))
-cfg["num_workers"] = max(0, int(workers))
-cfg["amp"] = amp.lower() not in ("0","false","no","off")
+if epochs:
+    cfg["epochs"] = max(1, int(epochs))
+if batch:
+    cfg["batch_size"] = max(1, int(batch))
+if workers:
+    cfg["num_workers"] = max(0, int(workers))
+if amp:
+    cfg["amp"] = amp.lower() not in ("0","false","no","off")
 tag = tag or "grid"
 task_type = cfg.get("task_type", "seg")
 default_out = pathlib.Path(cfg.get("out_dir", "runs/exp")).expanduser()
@@ -93,8 +97,10 @@ get_batch_for_size() {
   local val="${!var:-}"
   if [ -n "$val" ]; then
     echo "$val"
-  else
+  elif [ -n "$BATCH_DEFAULT" ]; then
     echo "$BATCH_DEFAULT"
+  else
+    echo ""
   fi
 }
 
