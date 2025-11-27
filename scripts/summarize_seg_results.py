@@ -175,11 +175,12 @@ def compute_stats(values: Iterable[float]) -> Tuple[Optional[float], Optional[fl
 
 
 def build_aggregates(run_records: List[RunRecord]) -> List[Dict]:
-    grouped: Dict[Tuple[bool, str], Dict[str, List[float]]] = {}
-    counts: Dict[Tuple[bool, str], int] = {}
+    grouped: Dict[Tuple[str, bool, str], Dict[str, List[float]]] = {}
+    counts: Dict[Tuple[str, bool, str], int] = {}
 
     for record in run_records:
-        key = (record.use_lora, record.dino_size)
+        ds_type = (record.dataset_type or "unknown").lower()
+        key = (ds_type, record.use_lora, record.dino_size)
         if key not in grouped:
             grouped[key] = {metric: [] for metric in METRIC_KEYS}
             counts[key] = 0
@@ -189,12 +190,15 @@ def build_aggregates(run_records: List[RunRecord]) -> List[Dict]:
             if isinstance(value, (int, float)):
                 grouped[key][metric].append(float(value))
 
+    def _sort_key(item: Tuple[Tuple[str, bool, str], Dict[str, List[float]]]):
+        (ds_type, use_lora, size), _ = item
+        return (ds_type, int(use_lora), size_rank(size), size)
+
     aggregates: List[Dict] = []
-    for key, metric_lists in sorted(
-        grouped.items(), key=lambda kv: (int(kv[0][0]), size_rank(kv[0][1]), kv[0][1])
-    ):
-        use_lora, size = key
+    for key, metric_lists in sorted(grouped.items(), key=_sort_key):
+        dataset_type, use_lora, size = key
         row: Dict[str, Optional[float]] = {
+            "dataset_type": dataset_type,
             "use_lora": use_lora,
             "dino_size": size,
             "num_runs": counts.get(key, 0),
@@ -275,6 +279,7 @@ def main() -> None:
         "best_epoch",
     ]
     summary_fieldnames = [
+        "dataset_type",
         "use_lora",
         "dino_size",
         "num_runs",
