@@ -11,6 +11,7 @@ from mlflow.tracking import MlflowClient
 from copy import deepcopy
 
 from dino_peft.datasets.lucchi_seg import LucchiSegDataset
+from dino_peft.datasets.droso_seg import DrosoSegDataset
 from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.utils.transforms import em_seg_transforms, denorm_imagenet
 from dino_peft.utils.viz import colorize_mask
@@ -123,18 +124,21 @@ class SegTrainer:
         dataset_params = dict(dataset_cfg.get("params", {}))
         dataset_map = {
             "lucchi": LucchiSegDataset,
+            "droso": DrosoSegDataset,
             "paired": PairedDirsSegDataset,
         }
         DatasetClass = dataset_map.get(dataset_type)
         if DatasetClass is None:
             raise ValueError(
                 f"Unsupported dataset.type '{dataset_type}'. "
-                "Use 'lucchi' or 'paired'."
+                "Use 'lucchi', 'droso', or 'paired'."
             )
         if dataset_type == "lucchi":
             dataset_params.setdefault("recursive", False)
             dataset_params.setdefault("zfill_width", 4)
             dataset_params.setdefault("image_prefix", "mask")
+        elif dataset_type == "droso":
+            dataset_params.setdefault("recursive", True)
 
         def _build_dataset(img_dir, mask_dir, transform):
             kwargs = {

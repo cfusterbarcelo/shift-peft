@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.datasets.lucchi_seg import LucchiSegDataset
+from dino_peft.datasets.droso_seg import DrosoSegDataset
 from dino_peft.utils.transforms import em_seg_transforms, denorm_imagenet
 from dino_peft.utils.viz import colorize_mask
 from dino_peft.utils.plots import save_triptych_grid
@@ -59,18 +60,21 @@ def build_dataset_from_cfg(cfg, split: str, transform):
     dataset_params = dict(dataset_cfg.get("params", {}))
     dataset_map = {
         "lucchi": LucchiSegDataset,
+        "droso": DrosoSegDataset,
         "paired": PairedDirsSegDataset,
     }
     DatasetClass = dataset_map.get(dataset_type)
     if DatasetClass is None:
         raise ValueError(
             f"Unsupported dataset.type '{dataset_type}'. "
-            "Use 'lucchi' or 'paired'."
+            "Use 'lucchi', 'droso', or 'paired'."
         )
     if dataset_type == "lucchi":
         dataset_params.setdefault("recursive", False)
         dataset_params.setdefault("zfill_width", 4)
         dataset_params.setdefault("image_prefix", "mask")
+    elif dataset_type == "droso":
+        dataset_params.setdefault("recursive", True)
 
     kwargs = {
         "img_size": img_size_cfg,
@@ -248,10 +252,17 @@ def _build_dataset(cfg, split: str, transform):
             zfill_width=int(params.get("zfill_width", 4)),
             image_prefix=params.get("image_prefix", "mask"),
         )
+    elif dataset_type == "droso":
+        return DrosoSegDataset(
+            **common,
+            recursive=bool(params.get("recursive", True)),
+            mask_prefix=params.get("mask_prefix", ""),
+            mask_suffix=params.get("mask_suffix", ""),
+        )
     else:
         raise ValueError(
             f"Unknown dataset.type '{dataset_type}'. "
-            "Use 'lucchi' or 'paired' and attach details under dataset.params."
+            "Use 'lucchi', 'droso', or 'paired' and attach details under dataset.params."
         )
 
 def best_checkpoint(run_dir) -> Path:
