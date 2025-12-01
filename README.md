@@ -1,38 +1,69 @@
 # DINO-EM-PEFT
-Parameter-efficient fine-tuning (PEFT) of DINOv2 ViT for electron microscopy (EM) segmentation using LoRA.
+Parameter-efficient fine-tuning (PEFT) of DINOv2 ViTs for electron microscopy (EM) **foreground segmentation** using **LoRA** adapters.
 
-> **New:** automated reporting and visualization
+The goal of this repo is to systematically study how DINO size and LoRA usage impact EM segmentation performance under domain shift.
+
+---
+
+> **Status**
+>
+> This repo is currently under active development.  
+> It is structured to run:
+>
+> - **locally on a Mac with a GPU**, and  
+> - **on an HPC cluster via `.sbatch` jobs**.
+>
+> For this reason, most experiment configs are duplicated so that the **same experiment** can be launched in both environments with minimal changes.
+
+---
+
+> **Automated reporting & visualization**
 >
 > - `scripts/summarize_seg_results.py` collects per-run metrics into `summary/*.csv`.
-> - `scripts/plot_seg_summary.py` turns those CSVs into polished bar/box/line plots plus an optional interactive dashboard. See [Visualizing results](#visualizing-results) below.
+> - `scripts/plot_seg_summary.py` turns those CSVs into publication-ready plots and a small HTML dashboard.  
+>   See [Visualizing results](#visualizing-results).
+
 
 ## TL;DR
 
 ```bash
-# 0) create env & install
-python -m venv .venv && source .venv/bin/activate
+# 0) create env & install package (Mac / local GPU example)
+python -m venv .venv
+source .venv/bin/activate
 pip install -e .
 
-# 1) compose datasets into one train/test (runs with no args; edit paths in the script header if needed)
-python scripts/compose_em_datasets.py
+# (cluster) you will typically activate a conda/module env in your .sbatch script
 
-# 2) train (Mac / local)
-python scripts/train_em_seg.py --cfg config/lucchi_lora_mac.yaml
+# 1) prepare datasets (edit paths inside the script you use)
+python scripts/<your_dataset_script>.py
 
-# 3) train (CUDA / cluster, Lucchi++)
-python scripts/train_em_seg.py --cfg config/lucchi_cluster.yaml
+# 2) launch an experiment by pointing to a config YAML
+# local Mac GPU:
+python scripts/<your_train_script>.py --config config/mac/<experiment>.yaml
+
+# cluster (via sbatch):
+sbatch scripts/slurm/<your_sbatch_script>.sbatch config/cluster/<experiment>.yaml
+
+# 3) after several runs, summarize & visualize results
+python scripts/summarize_seg_results.py
+python scripts/plot_seg_summary.py
 ```
+(Replace `<…>` placeholders with the actual script / config names you use in this repo.)
 
-To turn raw run folders into publication-ready plots:
+## Environments & Execution
+This GitHub repo is intentionally set up to support two main environments:
+1. **Local development on a Mac with GPU**  
+   Use the YAMLs under `config/mac/` and the scripts under `scripts/` directly. Create a Python virtual environment and install the package in editable mode (`pip install -e .`).
+2. **HPC cluster execution via SLURM**  
+   Use the YAMLs under `config/cluster/` and the SLURM sbatch scripts under `scripts/slurm/`. Adjust the sbatch scripts to your cluster's module system and job scheduler settings. Create a conda environment or load modules as needed.
 
-```bash
-# 4) summarize & plot (assume your runs live under /data/DINO-LoRA/seg)
-python scripts/summarize_seg_results.py --root /data/DINO-LoRA/seg
-python scripts/plot_seg_summary.py \
-  --summary-dir ~/Downloads/summary \
-  --output-dir plots/latest \
-  --interactive-html plots/latest/dashboard.html
-```
+## Overview 
+* Backbone: DINOv2 ViT (`vits14`/`vitb14` etc.) via `torch.hub`.
+* PEFT: LoRA injected into attention `qkv` and `proj` linear layers
+* Head: simple 1×1 conv projection → upsample to image size.
+* Datasets: utility to compose Drosophila + Lucchi++ into a unified layout
+* Devices: `device: "auto"` picks cuda → mps → cpu.
+* Experiment tracking: MLflow integration for logging metrics, parameters, and artifacts.
 
 ## Results Layout & Experiment IDs
 
@@ -71,12 +102,25 @@ To launch a new experiment:
 2. Edit the dataset paths as usual, then set a fresh `experiment_id`, ensure `results_root` points to your preferred root folder, and set `task_type` (`"seg"` or `"feats"`).
 3. Run the desired script. Outputs, checkpoints, configs, and plots will land under the corresponding run directory so you can diff or archive them safely.
 
-## What's here
-* **Backbone**: DINOv2 ViT (`vits14`/`vitb14` etc.) via `torch.hub`.
-* **PEFT**: LoRA injected into attention `qkv` and `proj` linear layers; backbone params frozen; only LoRA + segmentation head train.
-* **Head**: simple 1×1 conv projection → upsample to image size.
-* **Datasets**: utility to compose Drosophila + Lucchi++ into a unified layout.
-* **Devices**: `device: "auto"` picks cuda → mps → cpu.
+## Repository structure
+```DINO-EM-PEFT/
+  config/
+    mac/                   # Local (Mac) experiment configs
+    cluster/               # Cluster/SLURM experiment configs
+    *.yaml                 # Legacy / shared configs pending cleanup
+  docs/
+    media/                 # Screenshots, plots, README assets
+  scripts/                 # Training, evaluation, feature extraction, analysis
+  slurm/                   # SLURM sbatch scripts for cluster execution
+  src/                     # Package source code
+    data/                  # Dataset loading, preprocessing, augmentation
+    models/                # DINO + LoRA + segmentation head definitions
+    training/              # Training loops, evaluation, metrics
+    utils/                 # Helpers: logging, visualization, MLflow integration
+  README.md
+  pyproject.toml           # Package metadata
+  .gitignore
+```
 
 ## Datasets
 Lucchi, A., Smith, K., Achanta, R., Knott, G., & Fua, P. (2011). Supervoxel-based segmentation of mitochondria in em image stacks with learned shape features. IEEE transactions on medical imaging, 31(2), 474-486. Download [here](https://casser.io/connectomics).
@@ -84,7 +128,7 @@ Lucchi, A., Smith, K., Achanta, R., Knott, G., & Fua, P. (2011). Supervoxel-base
 Casser, V., Kang, K., Pfister, H., & Haehn, D. (2020, September). Fast mitochondria detection for connectomics. In Medical Imaging with Deep Learning (pp. 111-120). PMLR. Download [here](https://github.com/unidesigner/groundtruth-drosophila-vnc/tree/master).
 
 For usability purposes, the two dataset are composed into:
-````
+```bash
 <BASE>/composed-dinopeft/
   train/images, train/masks
   test/images,  test/masks
@@ -93,41 +137,10 @@ For usability purposes, the two dataset are composed into:
 With an 85% split for the Casser et al. dataset. 
 
 To do so, download the original datasets and run:
+
 ```bash
 python scripts/compose_em_datasets.py
 ```
-
-## Visualizing results
-
-The `plot_seg_summary.py` helper reads `summary.csv` and `run_metrics.csv` (generated by `summarize_seg_results.py`) and produces bar charts with error bars, run-level box+strip plots, and replicate trends—each sharing a consistent 0–1 y-axis to aid comparisons.
-
-```bash
-# Install plotting extras inside your env
-pip install matplotlib seaborn pandas plotly
-
-# Summarize runs (omit --root if your results already have summary/* exported)
-python scripts/summarize_seg_results.py --root /data/DINO-LoRA/seg
-
-# Generate static PNGs and an optional interactive dashboard
-python scripts/plot_seg_summary.py \
-  --summary-dir /data/DINO-LoRA/seg/summary \
-  --output-dir plots/summary_plots \
-  --interactive-html plots/summary_plots/dashboard.html
-```
-
-- **Static figures** land inside the output directory and carry descriptive filenames (e.g., `summary_foreground_iou.png`, `runs_mean_iou.png`).
-- **Interactive dashboard** (optional) bundles grouped bars, run-level boxes, and replicate trends into a single HTML file powered by Plotly for quick hover-tooltips.
-- **Consistent styling**: y-axis limits default to `[0, 1]`, ensuring side-by-side plots remain directly comparable across datasets and LoRA settings.
-
-### Sharing plots in the README
-
-Curate your favorite figures by copying them into `docs/media/` (this repository now ships with that folder and a `.gitkeep` placeholder). To embed them in Markdown, drop an image link such as:
-
-```markdown
-![Foreground IoU across DINO sizes](docs/media/foreground_iou.png)
-```
-
-Keeping assets in `docs/media/` keeps the repository tidy and avoids broken links when publishing on GitHub. Re-run `plot_seg_summary.py` whenever you collect new sweeps and update the saved figures as needed.
 
 ## Acknowledgements
 This project stands on the shoulders of excellent open-source work and research. We’re grateful to the authors and maintainers of the following projects and papers:
@@ -149,4 +162,4 @@ This project stands on the shoulders of excellent open-source work and research.
   Project/Paper: *DINOSim: Zero-Shot Object Detection and Semantic Segmentation on Electron Microscopy Images.*
 
 **Licensing note:**  
-Please review and respect the licenses of upstream repositories (DINOv2, `dinov3-finetune`, ExPLoRA) and any datasets you use. Their terms apply to model weights, code, and data redistributed or fine-tuned within this project.
+Please review and respect the licenses of upstream repositories (e.g. DINOv2) and any datasets you use. Their terms apply to model weights, code, and data redistributed or fine-tuned within this project.
