@@ -149,13 +149,14 @@ def main() -> None:
         f"{domain2_path} (N={feats_b.shape[0]}, D={feats_b.shape[1]}; {_fmt_filter(domain2_ids, domain2_names)})"
     )
 
+    # Compute FDD (FID-style metric) on the raw DINO features before any PCA reduction.
+    fdd_value = compute_fid_from_features(feats_a, feats_b)
     _, feats_a_pca, feats_b_pca = fit_pca_on_concat(
         feats_a,
         feats_b,
         n_components=n_components,
         random_state=seed,
     )
-    fid_value = compute_fid_from_features(feats_a_pca, feats_b_pca)
     lr_metrics = lr_domain_separability(
         feats_a_pca,
         feats_b_pca,
@@ -163,7 +164,8 @@ def main() -> None:
     )
 
     print(
-        f"[domain_analysis] FID (PCA{n_components}) between domain1 and domain2: {fid_value:.4f}"
+        "[domain_analysis] FDD (FID-style on raw DINO features) "
+        f"between domain1 and domain2: {fdd_value:.4f}"
     )
     print(
         "[domain_analysis] Logistic regression domain separability: "
@@ -173,7 +175,7 @@ def main() -> None:
 
     payload = {
         "metrics": {
-            "fid": fid_value,
+            "frechet_dino_distance": fdd_value,
             "logreg_accuracy": lr_metrics["accuracy"],
             "logreg_roc_auc": lr_metrics["roc_auc"],
         },
@@ -198,7 +200,7 @@ def main() -> None:
     with out_csv.open("w", newline="") as fp:
         writer = csv.writer(fp)
         writer.writerow(["metric", "value"])
-        writer.writerow(["fid", fid_value])
+        writer.writerow(["frechet_dino_distance", fdd_value])
         writer.writerow(["logreg_accuracy", lr_metrics["accuracy"]])
         writer.writerow(["logreg_roc_auc", lr_metrics["roc_auc"]])
     print(f"[domain_analysis] Saved metrics JSON to {out_json}")
@@ -209,7 +211,7 @@ def main() -> None:
             run_dir,
             "domain_analysis",
             {
-                "fid": fid_value,
+                "frechet_dino_distance": fdd_value,
                 "logreg_accuracy": lr_metrics["accuracy"],
                 "logreg_roc_auc": lr_metrics["roc_auc"],
                 "domain1_npz": str(domain1_path),

@@ -27,6 +27,19 @@ def denorm_imagenet(x: torch.Tensor) -> torch.Tensor:
     std  = x.new_tensor(IMAGENET_STD).view(1, 3, 1, 1)
     return x * std + mean
 
+# Helper is declared at module scope so it remains picklable for DataLoader workers.
+class _ResizeLongestEdge:
+    def __init__(self, resize_spec):
+        self.resize_spec = resize_spec
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        target_hw = compute_resized_hw((image.height, image.width), self.resize_spec)
+        target_wh = (target_hw[1], target_hw[0])
+        if image.size != target_wh:
+            return image.resize(target_wh, Image.BICUBIC)
+        return image
+
+
 def em_dino_unsup_transforms(img_size: int | dict | tuple = 518):
     """
     Eval-time transform for DINO unsupervised analysis:
@@ -36,16 +49,9 @@ def em_dino_unsup_transforms(img_size: int | dict | tuple = 518):
     """
     resize_spec = parse_img_size_config(img_size)
 
-    def _resize(image: Image.Image) -> Image.Image:
-        target_hw = compute_resized_hw((image.height, image.width), resize_spec)
-        target_wh = (target_hw[1], target_hw[0])
-        if image.size != target_wh:
-            return image.resize(target_wh, Image.BICUBIC)
-        return image
-
     return T.Compose(
         [
-            T.Lambda(_resize),
+            _ResizeLongestEdge(resize_spec),
             T.ToTensor(),
             T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]

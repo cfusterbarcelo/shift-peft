@@ -1,10 +1,10 @@
-experiment_id: "2025-01-01_A5_lucchi+droso_dinov2-base_lora-none_feats"
+experiment_id: "2025-12-02_A5_lucchi+droso_dinov2-base_lora-none_feats"
 results_root: "/Users/cfuste/Documents/Results/DINO-LoRA"
 task_type: "feats"
 
 data:
   # Folder with all your mixed images (lucchi-*.png, droso-stack*.tif, etc.)
-  data_dir: "/Users/cfuste/Documents/Data/ElectronMicroscopy/composed-dinopeft-unsupervised"
+  data_dir: "/Users/cfuste/Documents/Data/ElectronMicroscopy/composed-dinopeft/test/images"
 
 model:
   # One of: small, base, large, giant
@@ -13,7 +13,7 @@ model:
 runtime:
   # On the Mac, keep it small-ish and CPU-friendly
   batch_size: 8
-  num_workers: 2
+  num_workers: 0
   img_size:
     mode: longest_edge
     target: 1022

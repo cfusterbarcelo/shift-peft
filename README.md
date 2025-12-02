@@ -149,13 +149,13 @@ This project stands on the shoulders of excellent open-source work and research.
   We use DINOv2 Vision Transformers and public pretraining weights (loaded via `torch.hub`) as our frozen backbone. DINOv2 provides strong, general-purpose visual representations that we adapt to electron microscopy via parameter-efficient fine-tuning (PEFT).  
   Repo: <https://github.com/facebookresearch/dinov2>
 
-- **RobvanGastel/dinov3-finetune**  
-  This repository informed practical design choices for LoRA-based finetuning of DINOv2/DINOv3 encoders: which linear layers to target (e.g., attention `qkv` and `proj`), how to organize training/evaluation code, and how to integrate PEFT cleanly around a frozen backbone.  
-  Repo: <https://github.com/RobvanGastel/dinov3-finetune>
+- **FD-DINOv2 (Fréchet Distance with DINOv2 backbone)**  
+  We adapt the idea of replacing Inception features in FID with DINOv2 features, as implemented in the FD-DINOv2 repository. In our case, we compute a FID-style Fréchet distance between Gaussian approximations of the DINOv2 feature distributions of two EM datasets (with and without LoRA) to quantify domain shift.  
+  Repo: <https://github.com/justin4ai/FD-DINOv2>
 
-- **samar-khanna/ExPLoRA**  
-  ExPLoRA provides a strong reference for adapting Vision Transformers under domain shift via extended pre-training. While our current baseline is supervised LoRA on DINOv2, ExPLoRA guides our roadmap toward semi/self-supervised adaptation on unlabeled EM volumes and domain-shifted pretraining strategies.  
-  Repo: <https://github.com/samar-khanna/ExPLoRA>
+- **Exposing Flaws of Generative Model Evaluation Metrics**  
+  Stein et al. systematically study generative model evaluation metrics and show that relying on Inception-V3 can unfairly penalize diffusion models. They propose using self-supervised encoders such as DINOv2-ViT-L/14 as richer feature extractors for Fréchet-based scores, which motivates our choice to replace Inception with DINOv2 embeddings when measuring domain distances.  
+  Paper: *Exposing flaws of generative model evaluation metrics and their unfair treatment of diffusion models*, NeurIPS 2023.
 
 - **DINOSim (Electron Microscopy zero-shot evaluation)**  
   DINOSim motivates our evaluation focus: it investigates zero-shot detection/segmentation on EM imagery using DINO features and highlights the domain gap for microscopy. We build on that insight by demonstrating how PEFT (LoRA) improves downstream EM segmentation compared to zero-shot.  
