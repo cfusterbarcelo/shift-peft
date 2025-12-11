@@ -1,14 +1,13 @@
 #!/usr/bin/bash -l
 #SBATCH --job-name=dino-test
 #SBATCH --time=48:00:00
-#SBATCH --gres=gpu:1
+#SBATCH --gpus=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
-module --quiet load gpu   || module load gpu
-module --quiet load mamba || module load mamba
+module --quiet load miniforge3 || module load miniforge3
 
 PY="$HOME/data/conda/envs/dino-peft/bin/python"
 [ -x "$PY" ] || { echo "Python not found at $PY"; exit 1; }

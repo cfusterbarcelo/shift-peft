@@ -1,15 +1,14 @@
 #!/usr/bin/bash -l
 #SBATCH --job-name=dino-grid-lucchi
 #SBATCH --time=48:00:00
-#SBATCH --gres=gpu:H100:1
+#SBATCH --gpus=H100:1
 #SBATCH --constraint=H100
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
-module --quiet load gpu   || module load gpu
-module --quiet load mamba || module load mamba
+module --quiet load miniforge3 || module load miniforge3
 
 PY="$HOME/data/conda/envs/dino-peft/bin/python"
 [ -x "$PY" ] || { echo "Python not found at $PY"; exit 1; }

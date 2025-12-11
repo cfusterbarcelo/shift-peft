@@ -6,7 +6,7 @@
 #SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
-module --quiet load mamba || module load mamba
+module --quiet load miniforge3 || module load miniforge3
 
 PY="$HOME/data/conda/envs/dino-peft/bin/python"
 [ -x "$PY" ] || { echo "[error] Python not found at $PY" >&2; exit 1; }

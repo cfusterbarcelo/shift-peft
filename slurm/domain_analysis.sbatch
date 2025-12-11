@@ -8,8 +8,7 @@
 set -euo pipefail
 
 # Ensure CUDA libs are visible for torch/pytorch-fid even though we keep the job CPU-bound.
-module --quiet load gpu   || module load gpu
-module --quiet load mamba || module load mamba
+module --quiet load miniforge3 || module load miniforge3
 
 PY="$HOME/data/conda/envs/dino-peft/bin/python"
 [ -x "$PY" ] || { echo "[error] Python not found at $PY" >&2; exit 1; }
