@@ -193,6 +193,13 @@ def eval_loop(
                     )
                     trip_buf = []
                     trip_count += 1
+    if prev_dir is not None and "trip_buf" in locals() and trip_buf:
+        out_png = Path(prev_dir) / f"eval_triptych_{ckpt_tag}_g{trip_count:04d}.png"
+        save_triptych_grid(
+            trip_buf,
+            out_path=str(out_png),
+            title=f"Evaluation — {ckpt_tag} — group {trip_count}"
+        )
 
     eps = 1e-7
     iou  = inter / (union + eps)
