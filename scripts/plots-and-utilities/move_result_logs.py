@@ -28,9 +28,9 @@ def extract_job_id(text: str) -> str | None:
 
 
 def find_run_dirs(root: Path) -> dict[str, Path]:
-    """Map job ids to existing run directories."""
+    """Map job ids to existing run directories (searching recursively)."""
     mapping: dict[str, Path] = {}
-    for run_dir in root.iterdir():
+    for run_dir in root.rglob("*"):
         if not run_dir.is_dir():
             continue
         job_id = extract_job_id(run_dir.name)
