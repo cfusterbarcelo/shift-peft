@@ -3,13 +3,13 @@
  
 """ Example usage: 
 python scripts/plots-and-utilities/compare_ood_runs.py \
-    /Users/cfuste/Documents/Results/DINO-LoRA/ood-detection/2025-12-15_B1_lucchi-vs-STACK2droso_dinov2-base_NOlora-r16_ood \
-    /Users/cfuste/Documents/Results/DINO-LoRA/ood-detection/2025-12-15_B1_lucchi-vs-STACK2droso_dinov2-base_lora-r16_ood \
+    /Users/cfuste/Documents/Results/DINO-LoRA/ood-detection/2025-12-16_B2_droso-vs-testlucchi_dinov2-base_NOlora-r16_ood \
+    /Users/cfuste/Documents/Results/DINO-LoRA/ood-detection/2025-12-16_B2_droso-vs-testlucchi_dinov2-base_lora-r16_ood \
     --labels "Frozen DINO" "PEFT DINO"
 """
 
 
-from __future__ import annotations
+# from __future__ import annotations
 
 import argparse
 import csv
