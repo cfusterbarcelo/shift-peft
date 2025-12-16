@@ -50,7 +50,7 @@ from dino_peft.utils.transforms import em_dino_unsup_transforms
 ImageFile.LOAD_TRUNCATED_IMAGES = True  # load incomplete TIFFs instead of crashing
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 
 # Small containers describing dataset runtime settings.
@@ -152,6 +152,7 @@ def _read_file_list(list_path: str | None, root: Path) -> Optional[List[Path]]:
 
 # Collect candidate image paths with optional glob/regex filters.
 def discover_images(entry: Dict[str, Any], label: str) -> Tuple[List[str], Dict[str, Any]]:
+    """Expand globs/file lists into absolute image paths + record filters."""
     path_key = entry.get("path") or entry.get("data_dir") or entry.get("root")
     if not path_key:
         raise ValueError(f"Config for dataset '{label}' must define path/data_dir.")
@@ -213,11 +214,16 @@ def discover_images(entry: Dict[str, Any], label: str) -> Tuple[List[str], Dict[
     return [str(p) for p in files], filters
 
 
-# Thin Dataset wrapper that loads one image per path.
+# Thin Dataset wrapper that loads one image per path (applies spatial preprocess + transforms).
+# Thin Dataset wrapper that loads one image per path (applies spatial preprocess + transforms).
 class ImagePathDataset(Dataset):
-    def __init__(self, paths: Sequence[str], transform):
+    """Load PIL images, run spatial preprocessing, then feed repo transforms."""
+
+    def __init__(self, paths: Sequence[str], transform, *, spatial_preprocessor=None, dataset_label: str = "id"):
         self.paths = list(paths)
         self.transform = transform
+        self.spatial_preprocessor = spatial_preprocessor  # hook for center-crops/tiles
+        self.dataset_label = dataset_label
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -232,9 +238,163 @@ class ImagePathDataset(Dataset):
             pass
         if img.mode != "RGB":
             img = img.convert("RGB")
+        # Run the geometry harmonization (native / crop / etc.) before transforms.
+        if self.spatial_preprocessor is not None:
+            img = self.spatial_preprocessor.apply(img, self.dataset_label)
         if self.transform:
             img = self.transform(img)
         return img, path
+
+
+# Helper to inspect dataset geometry without preloading everything.
+def _probe_first_image_size(paths: Sequence[str]) -> Tuple[int, int]:
+    """Inspect the first loadable image to determine dataset-native geometry."""
+    for path in paths:
+        try:
+            with Image.open(path) as img:
+                w, h = img.size
+                if w > 0 and h > 0:
+                    return int(w), int(h)
+        except Exception:
+            continue
+    raise RuntimeError("Unable to determine image size for dataset (no readable images).")
+
+
+def _center_crop(image: Image.Image, target_size: Tuple[int, int]) -> Image.Image:
+    """Simple center crop that preserves aspect ratio (no stretching)."""
+    target_w, target_h = target_size
+    w, h = image.size
+    crop_w = min(target_w, w)
+    crop_h = min(target_h, h)
+    if crop_w == w and crop_h == h:
+        return image
+    left = max(0, int(round((w - crop_w) / 2)))
+    top = max(0, int(round((h - crop_h) / 2)))
+    right = left + crop_w
+    bottom = top + crop_h
+    return image.crop((left, top, right, bottom))
+
+
+# SpatialPreprocessor: central switchboard for native/crop/tile logic.
+class SpatialPreprocessor:
+    """Centralizes how we crop/keep images so model + plots share identical views."""
+    """Centralizes how we crop/keep images so model + plots share identical views."""
+
+    def __init__(
+        self,
+        mode: str,
+        multiple_of: Optional[int],
+        id_paths: Sequence[str],
+        target_paths: Sequence[str],
+    ) -> None:
+        self.mode = mode
+        self.multiple_of = multiple_of if multiple_of and multiple_of > 0 else None
+        self.id_probe_size = _probe_first_image_size(id_paths)
+        self.target_probe_size = _probe_first_image_size(target_paths)
+        self.crop_map: Dict[str, Optional[Tuple[int, int]]] = {"id": None, "target": None}
+        self._warned_small: set[Tuple[str, Tuple[int, int]]] = set()
+        self._resolve()
+
+    def _snap(self, value: int) -> int:
+        if not self.multiple_of:
+            return value
+        snapped = (value // self.multiple_of) * self.multiple_of
+        return snapped if snapped > 0 else value
+
+    def _snap_size(self, size: Tuple[int, int]) -> Tuple[int, int]:
+        w, h = size
+        return self._snap(w), self._snap(h)
+
+    def _resolve(self) -> None:
+        mode = self.mode.lower()
+        if mode == "native":
+            # No-op: keep original geometry as provided on disk
+            return
+        if mode == "crop_match_id":
+            ref_w, ref_h = self._snap_size(self.id_probe_size)
+            if ref_w <= 0 or ref_h <= 0:
+                ref_w, ref_h = self.id_probe_size
+            self.crop_map["target"] = (ref_w, ref_h)
+        elif mode == "crop_common_square":
+            id_min = min(self.id_probe_size)
+            target_min = min(self.target_probe_size)
+            side = min(id_min, target_min)
+            side = self._snap(side)
+            if side <= 0:
+                side = min(id_min, target_min)
+            self.crop_map["id"] = (side, side)
+            self.crop_map["target"] = (side, side)
+        else:
+            raise ValueError(f"Unknown spatial preprocessing mode '{self.mode}'")
+
+    def apply(self, image: Image.Image, dataset_label: str) -> Image.Image:
+        """Apply resolved crop for the given dataset (if any)."""
+        label = dataset_label.lower()
+        crop_size = self.crop_map.get(label)
+        if not crop_size:
+            return image
+        w, h = image.size
+        target_w, target_h = crop_size
+        adj_w = min(target_w, w)
+        adj_h = min(target_h, h)
+        adjusted = (adj_w, adj_h)
+        if adjusted != crop_size:
+            key = (label, adjusted)
+            if key not in self._warned_small:
+                print(
+                    f"[ood][warn] Image smaller than desired crop for '{label}'. "
+                    f"Requested {crop_size}, available {(w, h)}; using {adjusted}."
+                )
+                self._warned_small.add(key)
+        return _center_crop(image, adjusted)
+
+    def describe(self) -> str:
+        parts = [self.mode]
+        if self.multiple_of:
+            parts.append(f"multiple_of={self.multiple_of}")
+        if self.crop_map["id"]:
+            parts.append(f"id_crop={self.crop_map['id']}")
+        if self.crop_map["target"]:
+            parts.append(f"target_crop={self.crop_map['target']}")
+        return ", ".join(parts)
+
+    def summary_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "multiple_of": self.multiple_of,
+            "id_probe_size": list(self.id_probe_size),
+            "target_probe_size": list(self.target_probe_size),
+            "id_crop_size": list(self.crop_map["id"]) if self.crop_map["id"] else None,
+            "target_crop_size": list(self.crop_map["target"]) if self.crop_map["target"] else None,
+        }
+
+    def fingerprint_for(self, label: str) -> Dict[str, Any]:
+        info = self.summary_dict()
+        info["dataset_label"] = label
+        return info
+
+
+def create_spatial_preprocessor(
+    id_spec: DatasetSpec,
+    target_spec: DatasetSpec,
+    runtime_cfg: Dict[str, Any],
+) -> SpatialPreprocessor:
+    # Accept either runtime.spatial_preprocess or runtime.spatial (legacy) knobs.
+    # We resolve cropping once so dataloaders, caching, and plots stay consistent.
+    spatial_cfg = (
+        runtime_cfg.get("spatial_preprocess")
+        or runtime_cfg.get("spatial")
+        or {}
+    )
+    if not isinstance(spatial_cfg, dict):
+        raise ValueError("runtime.spatial_preprocess must be a mapping if provided.")
+    mode = str(spatial_cfg.get("mode", "native")).lower()
+    multiple = spatial_cfg.get("multiple_of")
+    try:
+        multiple_int = int(multiple)
+    except (TypeError, ValueError):
+        multiple_int = None
+    return SpatialPreprocessor(mode, multiple_int, id_spec.paths, target_spec.paths)
 
 
 # Pad batch to max height/width (preserves original aspect).
@@ -242,6 +402,7 @@ def pad_collate(batch):
     images, paths = zip(*batch)
     max_h = max(img.shape[1] for img in images)
     max_w = max(img.shape[2] for img in images)
+    # Dynamically pad to the largest tensor in the batch; avoids distortions.
     padded = []
     for img in images:
         pad_h = max_h - img.shape[1]
@@ -282,6 +443,7 @@ def build_dataset_spec(
 
 # Build DINO backbone and optionally inject LoRA weights.
 def load_backbone(model_cfg: Dict[str, Any], device: torch.device) -> DINOv2FeatureExtractor:
+    """Instantiate DINO backbone and optionally restore LoRA adapters."""
     dino_size = model_cfg.get("dino_size", "base")
     checkpoint = model_cfg.get("checkpoint")
     checkpoint_path = Path(checkpoint).expanduser() if checkpoint else None
@@ -319,6 +481,7 @@ def load_backbone(model_cfg: Dict[str, Any], device: torch.device) -> DINOv2Feat
 
 
 def _compute_paths_digest(paths: Sequence[str]) -> str:
+    """Fingerprint path ordering so caches invalidate when files change."""
     joined = "\n".join(paths).encode("utf-8")
     return md5(joined).hexdigest()
 
@@ -336,9 +499,11 @@ def build_cache_metadata(
     model_cfg: Dict[str, Any],
     runtime_cfg: Dict[str, Any],
     paths: Sequence[str],
+    spatial_fingerprint: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     checkpoint = model_cfg.get("checkpoint")
     pooling = model_cfg.get("pooling", "mean")
+    # Encode everything that affects the embedding values so cache hits are safe.
     meta = {
         "cache_version": CACHE_VERSION,
         "dataset_label": spec.label,
@@ -353,6 +518,7 @@ def build_cache_metadata(
         "transform": "em_dino_unsup_transforms",
         "device": runtime_cfg.get("device", "auto"),
         "runtime_cfg": _metadata_repr(runtime_cfg),
+        "spatial_preprocess": _metadata_repr(spatial_fingerprint or {}),
     }
     return meta
 
@@ -437,9 +603,16 @@ def extract_embeddings_for_dataset(
     runtime_cfg: Dict[str, Any],
     run_dir: Path,
     cache_enabled: bool,
+    spatial_preprocessor: Optional[SpatialPreprocessor],
 ) -> DatasetEmbeddings:
     cache_dir = _cache_paths(run_dir)
-    metadata = build_cache_metadata(spec, model_cfg, runtime_cfg, spec.paths)
+    metadata = build_cache_metadata(
+        spec,
+        model_cfg,
+        runtime_cfg,
+        spec.paths,
+        spatial_preprocessor.fingerprint_for(spec.label) if spatial_preprocessor else None,
+    )
     if cache_enabled:
         cached = load_cached_embeddings(cache_dir, spec.label, metadata)
         if cached is not None:
@@ -454,7 +627,13 @@ def extract_embeddings_for_dataset(
             )
 
     transform = em_dino_unsup_transforms(img_size=spec.img_size)
-    dataset = ImagePathDataset(spec.paths, transform)
+    # Wrap dataset so spatial preprocessor is applied right after PIL load.
+    dataset = ImagePathDataset(
+        spec.paths,
+        transform,
+        spatial_preprocessor=spatial_preprocessor,
+        dataset_label=spec.label,
+    )
     loader = DataLoader(
         dataset,
         batch_size=spec.batch_size,
@@ -469,6 +648,7 @@ def extract_embeddings_for_dataset(
     desc = f"{spec.label}_embed"
     vectors = []
     ordered_paths: List[str] = []
+    # Single pass over dataset—no gradients—just feature extraction.
     for imgs, paths in tqdm(loader, desc=desc):
         imgs = imgs.to(device, non_blocking=True)
         feats = model(imgs)
@@ -692,6 +872,7 @@ def plot_pca_scatter(
         pca, coords = run_pca(embeddings, n_components=2, random_state=seed, l2norm=False)
     except ValueError:
         return
+    # Reuse the same distance arrays across multiple plot types.
     plots_dir = ensure_plot_dir(run_dir)
     id_coords = coords[:split_index]
     target_coords = coords[split_index:]
@@ -926,8 +1107,66 @@ def plot_ood_score_hist(
     plt.close(fig)
 
 
+def _load_example_image(path: str, spatial_preprocessor: Optional[SpatialPreprocessor], label: str) -> Optional[Tuple[Image.Image, Path]]:
+    try:
+        img = Image.open(path)
+        if getattr(img, "n_frames", 1) > 1:
+            img.seek(0)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        if spatial_preprocessor is not None:
+            img = spatial_preprocessor.apply(img, label)
+        return img, Path(path)
+    except Exception:
+        return None
+
+
+def plot_spatial_examples(
+    id_spec: DatasetSpec,
+    target_spec: DatasetSpec,
+    spatial_preprocessor: Optional[SpatialPreprocessor],
+    out_path: Path,
+) -> None:
+    """Visual sanity check showing how crops affect ID vs target geometry."""
+    if not id_spec.paths or not target_spec.paths:
+        return
+    examples = [
+        ("ID", id_spec.paths[0], "id"),
+        ("Target", target_spec.paths[0], "target"),
+    ]
+    loaded = []
+    for title, path, label in examples:
+        sample = _load_example_image(path, spatial_preprocessor, label)
+        if sample is None:
+            continue
+        loaded.append((title, *sample))
+    if len(loaded) < 2:
+        return
+    fig, axes = plt.subplots(1, len(loaded), figsize=(6 * len(loaded), 6))
+    axes = np.atleast_1d(axes)
+    for ax, (title, img, path) in zip(axes, loaded):
+        width, height = img.size
+        ax.imshow(img)
+        ax.set_title(f"{title}: {path.name}\n{width}×{height}px", fontsize=11)
+        ax.set_xticks([0, width // 2, width])
+        ax.set_yticks([0, height // 2, height])
+        ax.set_xlabel("Width (px)")
+        ax.set_ylabel("Height (px)")
+    fig.suptitle("Spatial preprocessing preview", fontsize=14)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
 # Save an inspection grid of top-K outlier images.
-def save_outlier_grid(paths: Sequence[str], distances: np.ndarray, out_path: Path, cols: int = 4) -> None:
+def save_outlier_grid(
+    paths: Sequence[str],
+    distances: np.ndarray,
+    out_path: Path,
+    cols: int = 4,
+    spatial_preprocessor: Optional[SpatialPreprocessor] = None,
+    dataset_label: Optional[str] = None,
+) -> None:
     if not paths:
         return
     cols = max(1, cols)
@@ -945,6 +1184,8 @@ def save_outlier_grid(paths: Sequence[str], distances: np.ndarray, out_path: Pat
                 img.seek(0)
             if img.mode != "RGB":
                 img = img.convert("RGB")
+            if spatial_preprocessor is not None and dataset_label is not None:
+                img = spatial_preprocessor.apply(img, dataset_label)
         except Exception:
             ax.axis("off")
             continue
@@ -974,17 +1215,23 @@ def main() -> None:
     batch_size = int(runtime_cfg.get("batch_size", 8))
     num_workers = int(runtime_cfg.get("num_workers", 2))
 
+    # Each dataset has independent filters/globs, so keep both blocks explicit.
     id_entry = data_cfg.get("id")
     target_entry = data_cfg.get("target")
     if id_entry is None or target_entry is None:
         raise ValueError("Config must define data.id and data.target sections.")
 
     # Resolve dataset configs and keep run metadata consistent.
+    # Normalize dataset entries into reusable specs (paths, transforms, regex, etc.).
     id_spec = build_dataset_spec("id", id_entry, img_size_cfg, batch_size, num_workers)
     target_spec = build_dataset_spec("target", target_entry, img_size_cfg, batch_size, num_workers)
 
+    # Determine how to harmonize spatial geometry (native vs crop modes).
+    spatial_preprocessor = create_spatial_preprocessor(id_spec, target_spec, runtime_cfg)
+
     task_type = cfg.get("task_type", "ood-detection")
     run_dir = setup_run_dir(cfg, task_type=task_type, subdirs=("plots", "embeddings"))
+    plots_dir = ensure_plot_dir(run_dir)
     write_run_info(
         run_dir,
         {
@@ -997,9 +1244,18 @@ def main() -> None:
         },
     )
 
+    # Quick sanity log so users know geometry + hardware before extraction begins.
     print(f"[ood] Run directory: {run_dir}")
     print(f"[ood] Device: {device}")
     print(f"[ood] ID samples: {len(id_spec.paths)} | Target samples: {len(target_spec.paths)}")
+    print(f"[ood] Spatial preprocessing: {spatial_preprocessor.describe()}")
+
+    plot_spatial_examples(
+        id_spec,
+        target_spec,
+        spatial_preprocessor,
+        plots_dir / "spatial_preprocessing_preview.png",
+    )
 
     backbone = load_backbone(model_cfg, device)
     cache_enabled = bool(ood_cfg.get("cache_embeddings", True))
@@ -1013,6 +1269,7 @@ def main() -> None:
         runtime_cfg,
         run_dir,
         cache_enabled=cache_enabled,
+        spatial_preprocessor=spatial_preprocessor,
     )
     target_emb = extract_embeddings_for_dataset(
         target_spec,
@@ -1022,6 +1279,7 @@ def main() -> None:
         runtime_cfg,
         run_dir,
         cache_enabled=cache_enabled,
+        spatial_preprocessor=spatial_preprocessor,
     )
 
     if id_emb.embeddings.shape[1] != target_emb.embeddings.shape[1]:
@@ -1061,6 +1319,7 @@ def main() -> None:
     id_ratio = id_dist / safe_threshold
     target_ratio = target_dist / safe_threshold
 
+    # Collect run-level diagnostics for JSON + CLI printouts.
     summary = {
         "embedding_dim": int(id_emb.embeddings.shape[1]),
         "num_id": int(len(id_dist)),
@@ -1078,6 +1337,7 @@ def main() -> None:
         "target_stats": summarize_distances(target_dist),
         "threshold_quantile": quantile,
         "threshold_value": threshold,
+        "spatial_preprocess": spatial_preprocessor.summary_dict(),
     }
     def _ratio_stat(arr: np.ndarray, fn) -> float:
         return float(fn(arr)) if arr.size > 0 else float("nan")
@@ -1090,6 +1350,8 @@ def main() -> None:
     summary["target_max_over_threshold"] = _ratio_stat(target_ratio, np.max)
     summary["id_dist_log10_stats"] = log10_stats(id_dist)
     summary["target_dist_log10_stats"] = log10_stats(target_dist)
+    # Persist spatial preprocessing metadata for downstream comparisons.
+    summary["spatial_preprocess"] = spatial_preprocessor.summary_dict()
 
     combined_paths = id_emb.paths + target_emb.paths
     combined_dist = np.concatenate([id_dist, target_dist], axis=0)
@@ -1112,6 +1374,7 @@ def main() -> None:
     summary_path = run_dir / "summary.json"
     save_summary(summary_path, summary)
 
+    # Flatten per-image info (paths, distances, normalized scores) for CSV export.
     dataset_rows: List[Dict[str, Any]] = []
     dataset_info = {
         "id": {
@@ -1161,7 +1424,6 @@ def main() -> None:
     csv_path = run_dir / "distances.csv"
     write_distances_csv(csv_path, dataset_rows)
 
-    plots_dir = ensure_plot_dir(run_dir)
     plot_histogram(id_dist, target_dist, threshold, plots_dir / "distance_hist.png")
     plot_histogram_log(id_dist, target_dist, threshold, plots_dir / "distance_hist_log.png")
     plot_histogram_id_zoom(id_dist, threshold, plots_dir / "distance_hist_id_zoom.png")
@@ -1190,6 +1452,8 @@ def main() -> None:
         top_target_distances,
         plots_dir / "top_target_outliers_grid.png",
         cols=int(ood_cfg.get("outlier_grid_cols", 4)),
+        spatial_preprocessor=spatial_preprocessor,
+        dataset_label="target",
     )
 
     if run_dir is not None:
@@ -1206,6 +1470,7 @@ def main() -> None:
             },
         )
 
+    # Final console recap mirrors summary.json so quick runs don't need file inspection.
     target_median_ratio = summary["target_median_over_threshold"]
     target_ratio_txt = (
         f"{target_median_ratio:.3f}"

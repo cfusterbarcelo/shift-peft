@@ -2,26 +2,32 @@
 # Update the dataset + checkpoint paths before running:
 #   python ood-detection.py --cfg config/mac/ood_detection_mac.yaml
 
-experiment_id: "2025-12-16_B2_droso-vs-testlucchi_dinov2-base_lora-r16_ood"
+# Cropping configuration. 
+# native: use the original image size
+# crop_match_id: when id is lucchi and target is droso, crop both images to the size of the lucchi image with the same id
+# crop_common_square: when id is droso and target is lucchi, crop both images to the size of the largest square that fits into both images
+
+
+experiment_id: "2025-12-16_native_lucchi-vs-stack2droso_dinov2-base_lora_ood"
 results_root: "/Users/cfuste/Documents/Results/DINO-LoRA"
 task_type: "ood-detection"
 
 data:
   id:
-    path: "/Users/cfuste/Documents/Data/ElectronMicroscopy/Droso/Train_In"
-    recursive: true
-    file_glob: ["*.png", "*.tif"]
-    sequence_regex: '(?i)droso[_-]*(\d+)'
-  target:
-    path: "/Users/cfuste/Documents/Data/ElectronMicroscopy/Lucchi++/Test_In"
+    path: "/Users/cfuste/Documents/Data/ElectronMicroscopy/Lucchi++/Train_In"
     recursive: true
     file_glob: ["*.png", "*.tif"]
     sequence_regex: '(?i)lucchi[_-]*(\d+)'
+  target:
+    path: "/Users/cfuste/Documents/Data/ElectronMicroscopy/groundtruth-drosophila-vnc-master/stack2/raw"
+    recursive: true
+    file_glob: ["*.png", "*.tif"]
+    sequence_regex: '(?i)droso[_-]*(\d+)'
     # file_list: "/path/to/target_list.txt"   # optional filter (one path per line)
 
 model:
   dino_size: "base"
-  checkpoint: "/Volumes/G_MLS_VU_Group$/caterina/cluster-backup/seg/droso-lora/seg/2025-12-11_A2_droso-only_dinov2-base_lora-r16_seg_drosogrid62821_rep2_s2_base/ckpts/best_model.pt"
+  checkpoint: "/Users/cfuste/Documents/Results/DINO-LoRA/seg/cluster-checkpoints/lucchi-lora/lucchi_lora_base_best_model.pt"
   pooling: "mean"
   l2_normalize: true
 
@@ -35,6 +41,9 @@ runtime:
     patch_multiple: 14
     rounding: floor
   device: "auto"
+  spatial_preprocess:
+    mode: "native"            # options: native | crop_match_id | crop_common_square
+    multiple_of: 14           # optional; snap crops to patch multiple
 
 ood:
   cache_embeddings: true

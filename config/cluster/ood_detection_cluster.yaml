@@ -34,6 +34,9 @@ runtime:
     patch_multiple: 14
     rounding: floor
   device: "cuda"
+  spatial_preprocess:
+    mode: "native"            # native keeps source aspect; switch as needed
+    multiple_of: 14
 
 ood:
   cache_embeddings: true
