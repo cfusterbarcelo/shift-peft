@@ -95,8 +95,8 @@ def build_dataset_from_cfg(cfg, split: str, transform):
 def eval_loop(
     backbone, head, loader, device, num_classes,
     out_dir: Path | None = None, ckpt_tag: str = "model",
-    preview_n: int = 4,              # kept for compatibility (unused when saving all)
-    save_all_triptychs: bool = True 
+    preview_n: int = 4,
+    preview_seed: int | None = None,
 ):
     inter = np.zeros(num_classes, dtype=np.float64)
     union = np.zeros(num_classes, dtype=np.float64)
@@ -116,10 +116,20 @@ def eval_loop(
     fg_pr_pix = 0.0
 
     prev_dir = None
+    sample_indices = None
     if out_dir is not None:
         prev_dir = Path(out_dir) / "figs" / "eval_previews"
         prev_dir.mkdir(parents=True, exist_ok=True)
+        total = len(getattr(loader, "dataset", []))
+        if total and preview_n > 0:
+            import random
 
+            rng = random.Random(preview_seed) if preview_seed is not None else random
+            k = min(int(preview_n), int(total))
+            sample_indices = set(rng.sample(range(total), k))
+
+    preview_samples = []
+    global_idx = 0
     for b, (imgs, masks, names) in enumerate(tqdm(loader, desc="eval")):
         imgs  = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
@@ -154,50 +164,44 @@ def eval_loop(
         fg_gt_pix += mk_fg.sum().item()
         fg_pr_pix += pk_fg.sum().item()
     
-        # ---------------- Triptych saving (grouped) ----------------
-        if prev_dir is not None:
-            # de-normalize once per batch
-            imgs_vis = denorm_imagenet(imgs.detach().cpu()).clamp(0, 1)   # (B,C,H?,W?)
-            gts_cpu  = masks.detach().cpu()                               # (B,H,W)
-            preds_cp = logits.detach().argmax(1).cpu()                    # (B,H,W)
+        # ---------------- Random preview triptych ----------------
+        if prev_dir is not None and sample_indices:
+            batch_size = imgs.size(0)
+            capture = [
+                j for j in range(batch_size)
+                if (global_idx + j) in sample_indices
+            ]
+            if capture:
+                imgs_vis = denorm_imagenet(imgs.detach().cpu()).clamp(0, 1)
+                gts_cpu = masks.detach().cpu()
+                preds_cp = logits.detach().argmax(1).cpu()
 
-            H, W = gts_cpu.shape[-2:]
-            if imgs_vis.shape[-2:] != (H, W):
-                imgs_vis = F.interpolate(imgs_vis, size=(H, W), mode="bilinear", align_corners=False)
-
-            pred_rgb = colorize_mask(preds_cp, num_classes)               # (B,3,H,W)
-            gt_rgb   = colorize_mask(gts_cpu,   num_classes)
-
-            # ==== NEW: group into grids of N columns ====
-            group_cols = 4                                  # <- change if you want
-            if "trip_buf" not in locals():
-                trip_buf = []                               # persistent across batches
-                trip_count = 0
-
-            B = imgs_vis.size(0)
-            for j in range(B):
-                trip_buf.append({
-                    "image": imgs_vis[j],
-                    "gt":    gt_rgb[j],
-                    "pred":  pred_rgb[j],
-                    "name":  str(names[j]),
-                })
-                # when buffer reaches N, flush to disk
-                if len(trip_buf) == group_cols:
-                    out_png = Path(prev_dir) / f"eval_triptych_{ckpt_tag}_g{trip_count:04d}.png"
-                    save_triptych_grid(
-                        trip_buf,
-                        out_path=str(out_png),
-                        title=f"Evaluation — {ckpt_tag} — group {trip_count}"
+                H, W = gts_cpu.shape[-2:]
+                if imgs_vis.shape[-2:] != (H, W):
+                    imgs_vis = F.interpolate(
+                        imgs_vis, size=(H, W), mode="bilinear", align_corners=False
                     )
-                    trip_buf = []
-                    trip_count += 1
-    if prev_dir is not None and "trip_buf" in locals() and trip_buf:
-        out_png = Path(prev_dir) / f"eval_triptych_{ckpt_tag}_g{trip_count:04d}.png"
+
+                pred_rgb = colorize_mask(preds_cp, num_classes)
+                gt_rgb = colorize_mask(gts_cpu, num_classes)
+
+                for j in capture:
+                    preview_samples.append(
+                        {
+                            "image": imgs_vis[j],
+                            "gt": gt_rgb[j],
+                            "pred": pred_rgb[j],
+                            "name": str(names[j]),
+                        }
+                    )
+        global_idx += imgs.size(0)
+
+    if prev_dir is not None and preview_samples:
+        out_png = Path(prev_dir) / f"eval_triptych_{ckpt_tag}_random.png"
         save_triptych_grid(
-            trip_buf,
+            preview_samples,
             out_path=str(out_png),
-            title=f"Evaluation — {ckpt_tag} — group {trip_count}"
+            title=f"Evaluation — {ckpt_tag} — {len(preview_samples)} samples",
         )
 
     eps = 1e-7
@@ -349,8 +353,22 @@ def main():
     bb.model.load_state_dict(bb_state, strict=False)
 
     bb.eval(); head.eval()
+    preview_n = int(cfg.get("eval_preview_n", 4))
+    preview_seed = cfg.get("eval_preview_seed")
+    if preview_seed is not None:
+        preview_seed = int(preview_seed)
+
     # --- compute metrics ---
-    iou, dice, iou_f, dice_f = eval_loop(bb, head, loader, device, cfg["num_classes"], out_dir=run_dir)
+    iou, dice, iou_f, dice_f = eval_loop(
+        bb,
+        head,
+        loader,
+        device,
+        cfg["num_classes"],
+        out_dir=run_dir,
+        preview_n=preview_n,
+        preview_seed=preview_seed,
+    )
 
     # --- write CSV before updating metrics.json ---
     out_csv.parent.mkdir(parents=True, exist_ok=True)
