@@ -31,6 +31,9 @@ AMP=${AMP:-}
 USE_LORA=${USE_LORA:-}
 RUN_TAG=${RUN_TAG:-pairedgrid-dinov3-${SLURM_JOB_ID:-manual}}
 REPEATS=${REPEATS:-5}
+WEIGHTS_VITS16=${WEIGHTS_VITS16:-}
+WEIGHTS_VITB16=${WEIGHTS_VITB16:-}
+WEIGHTS_VITL16=${WEIGHTS_VITL16:-}
 
 read -r -a SIZE_LIST <<< "$DINO_SIZES"
 NUM_SIZES=${#SIZE_LIST[@]}
@@ -58,15 +61,21 @@ archive_slurm_log() {
 }
 
 prepare_cfg() {
-  local base_cfg="$1" size="$2" epochs="$3" batch="$4" workers="$5" amp="$6" use_lora="$7" tag="$8" backbone_name="$9"
-  "$PY" - "$base_cfg" "$size" "$epochs" "$batch" "$workers" "$amp" "$use_lora" "$tag" "$backbone_name" <<'PY'
+  local base_cfg="$1" size="$2" epochs="$3" batch="$4" workers="$5" amp="$6" use_lora="$7" tag="$8" backbone_name="$9" weights_override="${10}"
+  "$PY" - "$base_cfg" "$size" "$epochs" "$batch" "$workers" "$amp" "$use_lora" "$tag" "$backbone_name" "$weights_override" <<'PY'
 import sys, yaml, tempfile, pathlib, re
-base, size, epochs, batch, workers, amp, use_lora, tag, backbone_name = sys.argv[1:]
+base, size, epochs, batch, workers, amp, use_lora, tag, backbone_name, weights_override = sys.argv[1:]
 cfg = yaml.safe_load(open(base))
 cfg["dino_size"] = size
 backbone = cfg.get("backbone") or {}
 backbone["name"] = backbone_name or backbone.get("name", "dinov3")
 backbone["variant"] = size
+if weights_override:
+    backbone["weights"] = weights_override
+else:
+    base_weights = backbone.get("weights")
+    if isinstance(base_weights, str) and size and "vits16" in base_weights.lower():
+        backbone["weights"] = re.sub("vits16", size, base_weights, flags=re.IGNORECASE)
 cfg["backbone"] = backbone
 if epochs:
     cfg["epochs"] = max(1, int(epochs))
@@ -121,7 +130,13 @@ run_config() {
   local size_tag="${RUN_TAG}_rep${rep_id}_s$((size_idx + 1))_${size_clean}"
   local batch_val
   batch_val="$(get_batch_for_size "$size_clean")"
-  mapfile -t prep < <(prepare_cfg "$BASE_CFG" "$size_clean" "$EPOCHS" "$batch_val" "$NUM_WORKERS" "$AMP" "$USE_LORA" "$size_tag" "$BACKBONE_NAME")
+  local weights_override=""
+  case "$size_clean" in
+    vits16) weights_override="$WEIGHTS_VITS16" ;;
+    vitb16) weights_override="$WEIGHTS_VITB16" ;;
+    vitl16) weights_override="$WEIGHTS_VITL16" ;;
+  esac
+  mapfile -t prep < <(prepare_cfg "$BASE_CFG" "$size_clean" "$EPOCHS" "$batch_val" "$NUM_WORKERS" "$AMP" "$USE_LORA" "$size_tag" "$BACKBONE_NAME" "$weights_override")
   runtime_cfg="${prep[0]}"
   run_dir="${prep[1]}"
   echo "[grid size=${size_clean} rep=${rep_id}] batch=$batch_val lora=$USE_LORA cfg=$runtime_cfg"
