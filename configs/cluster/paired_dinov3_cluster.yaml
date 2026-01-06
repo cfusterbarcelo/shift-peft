@@ -9,7 +9,7 @@ test_mask_dir:   "/home/cfuste/data/datasets/DINO-POC/test/masks"
 
 # results + experiment naming
 experiment_id: "2025-01-02_A2_dinopoc_dinov3-vits16_head_seg"
-results_root: "/home/cfuste/data/DINO-LoRA"
+results_root: "/home/cfuste/data/DINO-LoRA/dinov3/"
 task_type: "seg"
 
 # stitched dataset already shares a naming scheme between images/masks
@@ -24,8 +24,8 @@ backbone:
   name: dinov3
   variant: vits16
   load_backend: torchhub
-  repo_dir: /home/cfuste/data/GitHub/dinov3
-  weights: /home/cfuste/data/Models/DINOv3/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
+  repo_dir: /home/cfuste/GitHub/dinov3
+  weights: /home/cfuste/data/models/dinov3/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
   preprocess:
     preset: em
 dino_size: vits16

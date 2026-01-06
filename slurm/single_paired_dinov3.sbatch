@@ -1,6 +1,6 @@
 #!/usr/bin/bash -l
 #SBATCH --job-name=dino-single-paired-dinov3
-#SBATCH --time=48:00:00
+#SBATCH --time=6:00:00
 #SBATCH --gpus=H100:1
 #SBATCH --constraint=H100
 #SBATCH --cpus-per-task=6
