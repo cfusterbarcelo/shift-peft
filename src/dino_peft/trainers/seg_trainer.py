@@ -13,7 +13,7 @@ from dino_peft.utils.transforms import em_seg_transforms, denorm_imagenet
 from dino_peft.utils.viz import colorize_mask
 from dino_peft.utils.plots import save_triptych_grid
 from dino_peft.backbones import build_backbone, patch_tokens_to_grid, resolve_backbone_cfg
-from dino_peft.models.lora import inject_lora, lora_parameters
+from dino_peft.models.lora import apply_peft, lora_parameters
 from dino_peft.models.head_seg1x1 import SegHeadDeconv
 from dino_peft.utils.paths import setup_run_dir, write_run_info, update_metrics
 from dino_peft.utils.image_size import DEFAULT_IMG_SIZE_CFG
@@ -217,20 +217,16 @@ class SegTrainer:
 
         # -------- LoRA ----------
         self.lora_names = []
-        if self.cfg.get("use_lora", True):
-            self.lora_names = inject_lora(
-                self.backbone.model,
-                target_substrings=self.cfg.get("lora_targets", ["attn.qkv", "attn.proj"]),
-                r=int(self.cfg.get("lora_rank", 8)),
-                alpha=int(self.cfg.get("lora_alpha", 16)),
-            )
+        audit = apply_peft(
+            self.backbone.model,
+            self.cfg,
+            run_dir=self.out_dir,
+            backbone_info=self.backbone_cfg,
+        )
+        self.lora_enabled = audit is not None
+        if audit is not None:
+            self.lora_names = audit.targets
         self.backbone.to(self.device)  # ensure LoRA modules on device
-
-        # freeze base, enable LoRA + head
-        for p in self.backbone.model.parameters():
-            p.requires_grad = False
-        for p in lora_parameters(self.backbone.model):
-            p.requires_grad = True
         for p in self.head.parameters():
             p.requires_grad = True
 
@@ -310,7 +306,7 @@ class SegTrainer:
         backbone_tag = f"{self.backbone_cfg.get('name')}-{self.backbone_cfg.get('variant')}"
         run_name = (
             f"{backbone_tag}_img{img_tag_str}_"
-            f"{'lora' if self.cfg.get('use_lora',True) else 'head'}"
+            f"{'lora' if getattr(self, 'lora_enabled', False) else 'head'}"
         )
         print(f"[train] run_name={run_name}")
 

@@ -19,7 +19,7 @@ from dino_peft.utils.viz import colorize_mask
 from dino_peft.utils.plots import save_triptych_grid
 from dino_peft.backbones import build_backbone, patch_tokens_to_grid, resolve_backbone_cfg
 from dino_peft.models.head_seg1x1 import SegHeadDeconv
-from dino_peft.models.lora import inject_lora
+from dino_peft.models.lora import apply_peft
 from dino_peft.utils.paths import setup_run_dir, update_metrics
 from dino_peft.utils.image_size import DEFAULT_IMG_SIZE_CFG
 def pad_collate(batch):
@@ -330,12 +330,7 @@ def main():
     # model
     backbone_cfg = resolve_backbone_cfg(cfg)
     bb = build_backbone(backbone_cfg, device=device)
-    use_lora = cfg.get("use_lora", True)
-    if use_lora:
-        targets = cfg.get("lora_targets", ["attn.qkv", "attn.proj"])
-        r = int(cfg.get("lora_rank", 8))
-        alpha = int(cfg.get("lora_alpha", 16))
-        lora_names = inject_lora(bb.model, target_substrings=targets, r=r, alpha=alpha)
+    apply_peft(bb.model, cfg, run_dir=run_dir, backbone_info=backbone_cfg, write_report=False)
 
     bb.to(device)
     head = SegHeadDeconv(in_ch=bb.embed_dim, num_classes=cfg["num_classes"], n_ups=4, base_ch=512).to(device)

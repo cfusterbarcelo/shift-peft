@@ -13,7 +13,7 @@ from dino_peft.backbones import (
     resolve_preprocess_cfg,
 )
 from dino_peft.datasets.flat_image_folder import FlatImageFolder
-from dino_peft.models.lora import inject_lora
+from dino_peft.models.lora import apply_peft
 
 @torch.no_grad()
 def extract_features_from_folder(
@@ -75,17 +75,14 @@ def extract_features_from_folder(
                 f"{ckpt_backbone.get('name')}:{ckpt_variant} != requested "
                 f"{backbone_cfg.get('name')}:{backbone_cfg.get('variant')}"
             )
-        use_lora = bool(ckpt_cfg.get("use_lora", False))
-        lora_rank = int(ckpt_cfg.get("lora_rank", 0) or 0)
-        lora_alpha = int(ckpt_cfg.get("lora_alpha", 0) or 0)
-        lora_targets = ckpt_cfg.get("lora_targets", ["attn.qkv", "attn.proj"])
-        if use_lora and lora_rank > 0:
-            replaced = inject_lora(
-                model.model,
-                target_substrings=lora_targets,
-                r=lora_rank,
-                alpha=lora_alpha if lora_alpha > 0 else lora_rank,
-            )
+        audit = apply_peft(
+            model.model,
+            ckpt_cfg,
+            backbone_info=ckpt_backbone,
+            write_report=False,
+        )
+        if audit is not None:
+            replaced = audit.targets
             lora_state = ckpt.get("backbone_lora") or {}
             if not lora_state:
                 raise RuntimeError("Checkpoint does not contain backbone_lora weights.")

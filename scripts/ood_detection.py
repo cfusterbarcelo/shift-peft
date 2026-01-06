@@ -47,7 +47,7 @@ from dino_peft.backbones import (
     resolve_backbone_cfg,
     resolve_preprocess_cfg,
 )
-from dino_peft.models.lora import inject_lora
+from dino_peft.models.lora import apply_peft
 from dino_peft.utils.image_size import DEFAULT_IMG_SIZE_CFG
 from dino_peft.utils.paths import setup_run_dir, update_metrics, write_run_info
 
@@ -467,17 +467,14 @@ def load_backbone(model_cfg: Dict[str, Any], device: torch.device):
     if checkpoint_path:
         ckpt = torch.load(checkpoint_path, map_location=device)
         ckpt_cfg = ckpt.get("cfg", {}) or {}
-        use_lora = bool(ckpt_cfg.get("use_lora", ckpt_cfg.get("enable_lora", True)))
-        lora_rank = int(ckpt_cfg.get("lora_rank", 0) or 0)
-        lora_alpha = int(ckpt_cfg.get("lora_alpha", lora_rank))
-        lora_targets = ckpt_cfg.get("lora_targets", ["attn.qkv", "attn.proj"])
-        if use_lora and lora_rank > 0:
-            inject_lora(
-                backbone.model,
-                target_substrings=lora_targets,
-                r=lora_rank,
-                alpha=lora_alpha if lora_alpha > 0 else lora_rank,
-            )
+        ckpt_backbone = resolve_backbone_cfg(ckpt_cfg)
+        audit = apply_peft(
+            backbone.model,
+            ckpt_cfg,
+            backbone_info=ckpt_backbone,
+            write_report=False,
+        )
+        if audit is not None:
             lora_state = ckpt.get("backbone_lora") or {}
             if not lora_state:
                 raise RuntimeError("Checkpoint missing backbone_lora weights.")
