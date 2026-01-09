@@ -1,9 +1,10 @@
 #!/usr/bin/bash -l
-#SBATCH --job-name=dino-test
+#SBATCH --job-name=dino-grid-lucchi-dinov2
 #SBATCH --time=48:00:00
-#SBATCH --gpus=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --gpus=H100:1
+#SBATCH --constraint=H100
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
 #SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
@@ -13,22 +14,30 @@ PY="$HOME/data/conda/envs/dino-peft/bin/python"
 [ -x "$PY" ] || { echo "Python not found at $PY"; exit 1; }
 
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
-mkdir -p logs
+mkdir -p logs runs
 
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$PWD/src"
 export TQDM_DISABLE=1
-export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 
-CFG_PATH=${CFG_PATH:-configs/cluster/lucchi_dinov2_cluster.yaml}
-DINO_SIZE=${DINO_SIZE:-base}
+BASE_CFG="configs/cluster/lucchi_dinov2_cluster.yaml"
+DINO_SIZES=${DINO_SIZES:-"small base large giant"}
 BACKBONE_NAME=${BACKBONE_NAME:-dinov2}
-BACKBONE_VARIANT=${BACKBONE_VARIANT:-$DINO_SIZE}
 EPOCHS=${EPOCHS:-}
-BATCH_SIZE=${BATCH_SIZE:-}
+BATCH_DEFAULT=${BATCH_DEFAULT:-}
 NUM_WORKERS=${NUM_WORKERS:-}
 AMP=${AMP:-}
-RUN_TAG=${RUN_TAG:-smoke${SLURM_JOB_ID:-manual}}
+RUN_TAG=${RUN_TAG:-lucchigrid-dinov2-${SLURM_JOB_ID:-manual}}
+REPEATS=${REPEATS:-5}
+
+read -r -a SIZE_LIST <<< "$DINO_SIZES"
+NUM_SIZES=${#SIZE_LIST[@]}
+if (( NUM_SIZES == 0 )); then
+  echo "[error] DINO_SIZES is empty" >&2
+  exit 1
+fi
+TOTAL_TASKS=$(( NUM_SIZES * REPEATS ))
 
 archive_slurm_log() {
   local dest_dir="$1" tag="$2"
@@ -66,7 +75,7 @@ if workers:
     cfg["num_workers"] = max(0, int(workers))
 if amp:
     cfg["amp"] = amp.lower() not in ("0","false","no","off")
-tag = tag or "manual"
+tag = tag or "grid"
 task_type = cfg.get("task_type", "seg")
 default_out = pathlib.Path(cfg.get("out_dir", "runs/exp")).expanduser()
 base_exp = cfg.get("experiment_id") or default_out.name
@@ -83,16 +92,51 @@ print(cfg["out_dir"])
 PY
 }
 
-mapfile -t prep < <(prepare_cfg "$CFG_PATH" "$BACKBONE_VARIANT" "$EPOCHS" "$BATCH_SIZE" "$NUM_WORKERS" "$AMP" "$RUN_TAG" "$BACKBONE_NAME")
-RUNTIME_CFG="${prep[0]}"
-RUN_DIR="${prep[1]}"
+get_batch_for_size() {
+  local size_key="${1^^}"
+  local var="BATCH_${size_key}"
+  local val="${!var:-}"
+  if [ -n "$val" ]; then
+    echo "$val"
+  elif [ -n "$BATCH_DEFAULT" ]; then
+    echo "$BATCH_DEFAULT"
+  else
+    echo ""
+  fi
+}
 
-echo "[info] runtime cfg: $RUNTIME_CFG"
-echo "[info] run dir:     $RUN_DIR"
+run_config() {
+  local size="$1"
+  local size_idx="$2"
+  local rep_idx="$3"
+  local size_clean="${size// /}"
+  local size_tag="${RUN_TAG}_rep${rep_idx}_s$((size_idx + 1))_${size_clean}"
+  local batch_val
+  batch_val="$(get_batch_for_size "$size_clean")"
+  mapfile -t prep < <(prepare_cfg "$BASE_CFG" "$size_clean" "$EPOCHS" "$batch_val" "$NUM_WORKERS" "$AMP" "$size_tag" "$BACKBONE_NAME")
+  runtime_cfg="${prep[0]}"
+  run_dir="${prep[1]}"
+  echo "[grid size=${size_clean} rep=${rep_idx}] batch=$batch_val cfg=$runtime_cfg"
+  "$PY" scripts/train_em_seg.py --cfg "$runtime_cfg"
+  "$PY" scripts/eval_em_seg.py --cfg "$runtime_cfg" --out_csv "$run_dir/${size_tag}_metrics.csv"
+  archive_slurm_log "$run_dir" "$size_tag"
+  rm -f "$runtime_cfg"
+}
 
-trap 'rm -f "$RUNTIME_CFG"' EXIT
-
-"$PY" scripts/train_em_seg.py --cfg "$RUNTIME_CFG"
-"$PY" scripts/eval_em_seg.py --cfg "$RUNTIME_CFG" --out_csv "$RUN_DIR/${RUN_TAG}_metrics.csv"
-
-archive_slurm_log "$RUN_DIR" "$RUN_TAG"
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+  task_id=${SLURM_ARRAY_TASK_ID}
+  if (( task_id < 0 || task_id >= TOTAL_TASKS )); then
+    echo "[error] SLURM_ARRAY_TASK_ID=$task_id outside 0..$((TOTAL_TASKS - 1))" >&2
+    exit 1
+  fi
+  size_index=$(( task_id % NUM_SIZES ))
+  rep_index=$(( task_id / NUM_SIZES + 1 ))
+  run_config "${SIZE_LIST[$size_index]}" "$size_index" "$rep_index"
+else
+  echo "[info] SLURM_ARRAY_TASK_ID not set; running all $TOTAL_TASKS configs sequentially"
+  for ((rep=1; rep<=REPEATS; rep++)); do
+    for ((idx=0; idx<NUM_SIZES; idx++)); do
+      run_config "${SIZE_LIST[$idx]}" "$idx" "$rep"
+    done
+  done
+fi

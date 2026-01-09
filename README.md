@@ -14,10 +14,10 @@ source .venv/bin/activate
 pip install -e .
 
 # 1) train (local)
-python scripts/train_em_seg.py --cfg configs/mac/lucchi_lora_mac.yaml
+python scripts/train_em_seg.py --cfg configs/mac/lucchi_dinov2_lora_mac.yaml
 
 # 2) eval (optional)
-python scripts/eval_em_seg.py --cfg configs/mac/lucchi_lora_mac.yaml
+python scripts/eval_em_seg.py --cfg configs/mac/lucchi_dinov2_lora_mac.yaml
 
 # 3) summarize + plots
 python scripts/analysis/summarize_seg_results.py --root /path/to/results/seg
@@ -34,7 +34,7 @@ python scripts/ood_detection.py --cfg configs/mac/ood_detection_mac.yaml
 Cluster usage stays the same via SLURM sbatch:
 
 ```bash
-sbatch slurm/single_lucchi.sbatch configs/cluster/lucchi_cluster.yaml
+sbatch slurm/single_lucchi_dinov2.sbatch configs/cluster/lucchi_dinov2_cluster.yaml
 ```
 
 ---
@@ -83,11 +83,11 @@ Legacy configs that only specify `dino_size` still work and default to DINOv2.
 ### Training / Evaluation (DINOv2 or DINOv3 segmentation)
 - Train:
   ```bash
-  python scripts/train_em_seg.py --cfg configs/mac/lucchi_lora_mac.yaml
+  python scripts/train_em_seg.py --cfg configs/mac/lucchi_dinov2_lora_mac.yaml
   ```
 - Eval (writes metrics + preview triptychs):
   ```bash
-  python scripts/eval_em_seg.py --cfg configs/mac/lucchi_lora_mac.yaml
+  python scripts/eval_em_seg.py --cfg configs/mac/lucchi_dinov2_lora_mac.yaml
   ```
 
 ### Summary plots

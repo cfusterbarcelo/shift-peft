@@ -1,18 +1,14 @@
-# Environment: cluster (UZH Science) — Lucchi++ segmentation run
+# Environment: cluster (UZH Science) - Lucchi++ segmentation run
+# DINOv3 LoRA config.
 
 # ---- I/O ----
-# train_img_dir: /home/cfuste/data/datasets/DINO-POC/train/images
-# train_mask_dir: /home/cfuste/data/datasets/DINO-POC/train/masks
-# test_img_dir:    /home/cfuste/data/datasets/DINO-POC/test/images
-# test_mask_dir:   /home/cfuste/data/datasets/DINO-POC/test/masks
-# only Lucchi++
 train_img_dir: "/home/cfuste/data/datasets/Lucchi++/Train_In"
 train_mask_dir: "/home/cfuste/data/datasets/Lucchi++/Train_Out"
 test_img_dir:    "/home/cfuste/data/datasets/Lucchi++/Test_In"
 test_mask_dir:   "/home/cfuste/data/datasets/Lucchi++/Test_Out"
 
 # results + experiment naming (stored under /data to persist on the cluster)
-experiment_id: "2025-01-01_A1_lucchi-only_dinov2-base_lora-r16_seg"
+experiment_id: "2025-01-02_A1_lucchi-only_dinov3-vits16_lora-r16_seg"
 results_root: "/home/cfuste/data/DINO-LoRA"
 task_type: "seg"
 
@@ -26,27 +22,32 @@ dataset:
 
 # ---- model / backbone ----
 backbone:
-  name: dinov2
-  variant: base
+  name: dinov3
+  variant: vits16
   load_backend: torchhub
-  weights: null
-  repo_dir: null
+  repo_dir: /home/cfuste/data/GitHub/dinov3
+  weights: /home/cfuste/data/Models/DINOv3/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
   preprocess:
     preset: em
-dino_size: base
+dino_size: vits16
 img_size:
   mode: longest_edge
-  target: 1022   # largest <= 1024 while staying multiple of 14
-  patch_multiple: 14
+  target: 1022   # largest <= 1024 while staying multiple of 16
+  patch_multiple: 16
   rounding: floor
 num_classes: 2
 
 
 # ---- LoRA ----
 use_lora: true
-lora_targets: [attn.qkv, attn.proj]
 lora_rank: 16
 lora_alpha: 32
+lora:
+  enabled: true
+  target_policy: vit_attention_only
+  layer_selection: all
+  exclude: [head, decoder, seg_head]
+  compatibility_mode: true
 
 # ---- training ----
 batch_size: 1          # tightened for low-memory smoke tests on standard GPUs
@@ -59,7 +60,7 @@ device: auto
 amp: false            # first run: stability check without AMP
 
 # ---- loss (CE + Tversky on foreground) ----
-loss: dice      # ce, dice, ce_tversky 
+loss: dice      # ce, dice, ce_tversky
 class_weights: [1.0, 15.0]    # bg, fg
 tversky_alpha: 0.7
 tversky_beta: 0.3

@@ -8,7 +8,7 @@ def main():
         "--config",
         dest="cfg",
         type=str,
-        default="configs/mac/lucchi_lora_mac.yaml",
+        default="configs/mac/lucchi_dinov2_lora_mac.yaml",
         help="Path to YAML config.",
     )
     args = ap.parse_args()
