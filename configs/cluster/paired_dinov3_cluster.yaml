@@ -73,3 +73,7 @@ clip_grad_norm: 1.0   # global grad clip
 # ---- export / viz ----
 binarize: true
 binarize_threshold: 128
+
+# ---- evaluation previews ----
+eval_preview_mode: all   # all|random
+eval_preview_cols: 4

@@ -86,7 +86,11 @@ if workers:
 if amp:
     cfg["amp"] = amp.lower() not in ("0","false","no","off")
 if use_lora:
-    cfg["use_lora"] = use_lora.lower() not in ("0","false","no","off")
+    use = use_lora.lower() not in ("0","false","no","off")
+    cfg["use_lora"] = use
+    lora_cfg = cfg.get("lora") or {}
+    lora_cfg["enabled"] = use
+    cfg["lora"] = lora_cfg
 tag = tag or "grid"
 task_type = cfg.get("task_type", "seg")
 default_out = pathlib.Path(cfg.get("out_dir", "runs/exp")).expanduser()
