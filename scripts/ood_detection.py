@@ -637,8 +637,13 @@ def extract_embeddings_for_dataset(
                 sequence_ids=seq,
             )
 
+    backbone_cfg = resolve_backbone_cfg(model_cfg)
     preprocess_cfg = resolve_preprocess_cfg(model_cfg, default_img_size=spec.img_size)
-    transform = build_preprocess_transform(preprocess_cfg["preset"], preprocess_cfg["img_size"])
+    transform = build_preprocess_transform(
+        preprocess_cfg["preset"],
+        preprocess_cfg["img_size"],
+        backbone_cfg=backbone_cfg,
+    )
     # Wrap dataset so spatial preprocessor is applied right after PIL load.
     dataset = ImagePathDataset(
         spec.paths,

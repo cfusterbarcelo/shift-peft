@@ -16,6 +16,13 @@ $ python scripts/smoke_test.py \
   --repo-dir /Users/cfuste/Documents/GitHub/dinov3 \
   --device cpu
 
+OpenCLIP smoke test:
+$ python scripts/smoke_test.py \
+  --backbone-name openclip \
+  --model "ViT-L-14" \
+  --pretrained laion2b_s32b_b79k \
+  --device cpu
+
 """
 
 import argparse
@@ -23,6 +30,7 @@ import torch
 
 from dino_peft.backbones import build_backbone, patch_tokens_to_grid, resolve_backbone_cfg
 from dino_peft.models.head_seg1x1 import SegHeadDeconv
+from dino_peft.models.lora import apply_peft
 
 
 def resolve_device(device_str: str) -> torch.device:
@@ -38,10 +46,16 @@ def resolve_device(device_str: str) -> torch.device:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run a tiny forward pass through DINO backbone + seg head.")
-    ap.add_argument("--backbone-name", default="dinov2", help="dinov2 or dinov3")
+    ap.add_argument("--backbone-name", default="dinov2", help="dinov2, dinov3, or openclip")
     ap.add_argument("--variant", default="small", help="Backbone variant (e.g., small, vits16).")
+    ap.add_argument("--model", default=None, help="OpenCLIP model name (e.g., ViT-L-14).")
     ap.add_argument("--dino-size", default=None, help="Backward-compatible alias for --variant.")
     ap.add_argument("--weights", default=None, help="Optional weights path/URL (required for DINOv3).")
+    ap.add_argument(
+        "--pretrained",
+        default=None,
+        help="OpenCLIP pretrained tag or local checkpoint path.",
+    )
     ap.add_argument("--repo-dir", default=None, help="Optional local repo path for torch.hub.")
     ap.add_argument("--device", default="auto", help="auto/cpu/cuda/mps")
     ap.add_argument(
@@ -51,16 +65,27 @@ def main() -> None:
         help="Square image size (must be a multiple of the backbone patch size).",
     )
     ap.add_argument("--num-classes", type=int, default=2)
+    ap.add_argument(
+        "--lora-check",
+        action="store_true",
+        help="Apply LoRA attention-only policy and verify trainable params.",
+    )
     args = ap.parse_args()
 
     device = resolve_device(args.device)
     img_size = int(args.image_size)
     variant = args.dino_size or args.variant
+    if args.backbone_name == "openclip" and args.model is None and variant == "small":
+        model_name = "ViT-L-14"
+    else:
+        model_name = args.model or variant
     backbone_cfg = resolve_backbone_cfg(
         {
             "backbone": {
                 "name": args.backbone_name,
                 "variant": variant,
+                "model": model_name,
+                "pretrained": args.pretrained,
                 "weights": args.weights,
                 "repo_dir": args.repo_dir,
                 "load_backend": "torchhub",
@@ -76,7 +101,13 @@ def main() -> None:
         f"img_size={img_size}"
     )
 
-    backbone = build_backbone(backbone_cfg, device=str(device))
+    try:
+        backbone = build_backbone(backbone_cfg, device=str(device))
+    except Exception as exc:
+        if backbone_cfg["name"] == "openclip":
+            print(f"[smoke_test] OpenCLIP load failed; skipping ({exc}).")
+            return
+        raise
     if img_size % backbone.patch_size != 0:
         raise ValueError(
             f"--image-size must be a multiple of patch_size={backbone.patch_size}."
@@ -97,6 +128,32 @@ def main() -> None:
         f"[smoke_test] feats={tuple(feats.shape)} logits={tuple(logits.shape)} "
         f"patch_tokens={tuple(output.patch_tokens.shape)} grid={output.grid_size}"
     )
+
+    do_lora_check = args.lora_check or backbone_cfg["name"] == "openclip"
+    if do_lora_check:
+        lora_cfg = {
+            "use_lora": True,
+            "lora": {
+                "enabled": True,
+                "target_policy": "vit_attention_only",
+                "layer_selection": "all",
+                "exclude": ["head", "decoder", "seg_head"],
+                "compatibility_mode": True,
+            },
+        }
+        audit = apply_peft(
+            backbone.model,
+            lora_cfg,
+            run_dir=None,
+            backbone_info=backbone_cfg,
+            write_report=False,
+        )
+        if audit is None or audit.total_targets == 0:
+            raise RuntimeError("LoRA smoke test found zero targets.")
+        print(
+            f"[smoke_test] lora_targets={audit.total_targets} "
+            f"blocks={audit.blocks_targeted}/{audit.block_count}"
+        )
 
 
 if __name__ == "__main__":

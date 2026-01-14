@@ -12,7 +12,12 @@ from dino_peft.datasets.paired_dirs_seg import PairedDirsSegDataset
 from dino_peft.utils.transforms import em_seg_transforms, denorm_imagenet
 from dino_peft.utils.viz import colorize_mask
 from dino_peft.utils.plots import save_triptych_grid
-from dino_peft.backbones import build_backbone, patch_tokens_to_grid, resolve_backbone_cfg
+from dino_peft.backbones import (
+    build_backbone,
+    patch_tokens_to_grid,
+    resolve_backbone_cfg,
+    resolve_preprocess_cfg,
+)
 from dino_peft.models.lora import apply_peft, lora_parameters
 from dino_peft.models.head_seg1x1 import SegHeadDeconv
 from dino_peft.utils.paths import setup_run_dir, write_run_info, update_metrics
@@ -106,6 +111,8 @@ class SegTrainer:
         self.previews_dir = self.fig_dir / "previews"
         backbone_cfg = resolve_backbone_cfg(self.cfg)
         self.backbone_cfg = backbone_cfg
+        preprocess_cfg = resolve_preprocess_cfg(self.cfg, default_img_size=self.img_size_cfg)
+        self.preprocess_cfg = preprocess_cfg
         write_run_info(
             self.out_dir,
             {
@@ -114,6 +121,7 @@ class SegTrainer:
                 "img_size": self.cfg.get("img_size"),
                 "backbone_name": backbone_cfg.get("name"),
                 "backbone_variant": backbone_cfg.get("variant"),
+                "preprocess_preset": preprocess_cfg.get("preset"),
             },
         )
 

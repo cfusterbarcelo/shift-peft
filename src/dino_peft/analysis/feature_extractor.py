@@ -105,7 +105,11 @@ def extract_features_from_folder(
 
     # Data loader using transforms for EM segmentation
     preprocess_cfg = resolve_preprocess_cfg({"backbone": backbone_cfg}, default_img_size=img_size)
-    transform = build_preprocess_transform(preprocess_cfg["preset"], preprocess_cfg["img_size"])
+    transform = build_preprocess_transform(
+        preprocess_cfg["preset"],
+        preprocess_cfg["img_size"],
+        backbone_cfg=backbone_cfg,
+    )
     dataset = FlatImageFolder(root_dir=data_dir, transform=transform)
 
     def pad_collate(batch):

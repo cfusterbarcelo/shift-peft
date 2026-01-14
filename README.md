@@ -1,5 +1,5 @@
 # shift-peft
-Parameter-efficient fine-tuning (PEFT) of DINOv2/DINOv3 ViTs for electron microscopy (EM) **foreground segmentation** using **LoRA** adapters.
+Parameter-efficient fine-tuning (PEFT) of DINOv2/DINOv3/OpenCLIP ViTs for electron microscopy (EM) **foreground segmentation** using **LoRA** adapters.
 
 This is a cleaned-up fork of the original DINOv2 EM segmentation experiments. The DINOv2 pipeline remains intact, and a backbone adapter layer now enables DINOv3.
 
@@ -41,6 +41,7 @@ sbatch slurm/single_lucchi_dinov2.sbatch configs/cluster/lucchi_dinov2_cluster.y
 
 ## Install (minimal)
 - Base install: `pip install -e .`
+- OpenCLIP backbone: `open-clip-torch` (pulled in by the base install).
 - Optional plotting deps (used by analysis scripts): `pandas`, `matplotlib`, `seaborn`, `plotly`
 - Optional dim-reduction deps: `umap-learn`
 - Optional OOD extras: `scikit-learn`
@@ -49,7 +50,7 @@ If you prefer conda, see `configs/environments/` for minimal environment YAMLs.
 
 ---
 
-## Backbone Selection (DINOv2 vs DINOv3)
+## Backbone Selection (DINOv2, DINOv3, OpenCLIP)
 Backbone choice is config-driven via a `backbone` block. See examples under `configs/backbones/`.
 
 Example (DINOv2):
@@ -76,6 +77,18 @@ backbone:
     preset: em
 ```
 
+Example (OpenCLIP):
+```yaml
+backbone:
+  name: openclip
+  model: "ViT-L-14"
+  pretrained: "laion2b_s32b_b79k"  # or local path
+  weights: ""                      # optional local checkpoint
+  preprocess:
+    preset: em          # or openclip_native
+```
+OpenCLIP `global_embedding` uses the CLS token when present (falls back to mean-pooled patch tokens).
+
 Legacy configs that only specify `dino_size` still work and default to DINOv2.
 
 ## How to Run
@@ -89,6 +102,17 @@ Legacy configs that only specify `dino_size` still work and default to DINOv2.
   ```bash
   python scripts/eval_em_seg.py --cfg configs/mac/lucchi_dinov2_lora_mac.yaml
   ```
+
+### Training / Evaluation (OpenCLIP segmentation)
+- ViT-L-14:
+  ```bash
+  python scripts/train_em_seg.py --cfg configs/mac/paired_openclip_vitl14.yaml
+  ```
+- ViT-H-14:
+  ```bash
+  python scripts/train_em_seg.py --cfg configs/mac/paired_openclip_vith14.yaml
+  ```
+- Toggle LoRA by setting `lora.enabled` true/false in the config (the seg head remains trainable).
 
 ### Summary plots
 - Aggregate runs (writes `summary.csv`, `run_metrics.csv`, `summary.json`):
@@ -119,6 +143,9 @@ Legacy configs that only specify `dino_size` still work and default to DINOv2.
 python scripts/ood_detection.py --cfg configs/mac/ood_detection_mac.yaml
 ```
 
+### OpenCLIP preprocessing
+Default experiments use `preprocess.preset: em` for comparability. Use `preprocess.preset: openclip_native` when you want OpenCLIP's normalization.
+
 ### Domain gap analysis (FDD + linear separability)
 ```bash
 python scripts/run_domain_analysis.py --cfg configs/mac/domain_analysis.yaml
@@ -136,6 +163,16 @@ python scripts/smoke_test.py --dino-size small --device cpu
 For DINOv3 (weights required), provide a local path:
 ```bash
 python scripts/smoke_test.py --backbone-name dinov3 --variant vits16 --weights /path/to/dinov3_vits16_pretrain.pth
+```
+
+For OpenCLIP:
+```bash
+python scripts/smoke_test.py --backbone-name openclip --model "ViT-L-14" --pretrained laion2b_s32b_b79k --device cpu
+```
+
+LoRA target dry-run (writes `lora_targets.json` + module tree):
+```bash
+python scripts/inspect_backbone.py --cfg configs/mac/paired_openclip_vitl14.yaml
 ```
 
 Note: the first DINOv2 run may download weights via `torch.hub` if they are not cached.
@@ -158,6 +195,13 @@ backbone:
 ```
 
 Also update `img_size.patch_multiple` to 16 when using DINOv3 so resizing snaps to the correct stride.
+
+---
+
+## OpenCLIP Weights & Caching
+Use `backbone.pretrained` to point to an OpenCLIP tag (auto-downloads if cached access is available) or set
+`backbone.weights` to a local checkpoint path for offline clusters. Cache locations can be steered via
+`HF_HOME` or `XDG_CACHE_HOME` (OpenCLIP honors standard cache env vars).
 
 ---
 
@@ -233,7 +277,6 @@ python scripts/data/compose_em_datasets.py
 ---
 
 ## Future work
-- Add OpenCLIP backbone support.
 - Expand backbone coverage (additional checkpoints/variants, richer register-token analysis).
 - Add new datasets/modalities (other EM, histology, etc.).
 
