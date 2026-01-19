@@ -3,10 +3,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from pathlib import Path
+import re
 
-# === 1) Load your summary and extract ViT-g (giant) results ===
-summary_path = Path("/Users/cfuste/Documents/Results/20251201-cluster-backup/seg/summary/summary.csv")
-df = pd.read_csv(summary_path)
+# === 1) Load summaries and extract the largest model per backbone ===
+summary_dir = Path("/Users/cfuste/Documents/Results/DINO-LoRA/seg/summary-output")
+summary_files = {
+    "DINOv2": "summary-dinov2.csv",
+    "DINOv3": "summary-dinov3.csv",
+    "OpenCLIP": "summary-openclip.csv",
+}
 
 metric_col = "foreground_iou_mean"  # IoUf
 
@@ -17,24 +22,77 @@ ours_color       = "#1f57ff"   # yellow
 improve_color    = "#35C759"   # green
 worse_color      = "#FF3B30"   # red
 
-# Filter to ViT-g only
-df_g = df[df["dino_size"] == "giant"].copy()
+SIZE_RANK = {
+    "tiny": 0,
+    "small": 1,
+    "base": 2,
+    "large": 3,
+    "giant": 4,
+    "huge": 5,
+}
+VIT_RANK = {
+    "vit-s": 0,
+    "vit-b": 1,
+    "vit-l": 2,
+    "vit-g": 3,
+    "vit-h": 4,
+    "vit-bigg": 5,
+}
 
-def get_pair(dataset_type):
-    base_val = df_g[
-        (df_g["dataset_type"] == dataset_type) &
-        (df_g["use_lora"] == False)
+def _normalize_bool(series: pd.Series) -> pd.Series:
+    mapping = {"true": True, "false": False, "1": True, "0": False}
+    return (
+        series.astype(str).str.strip().str.lower().map(mapping, na_action="ignore").fillna(False)
+    )
+
+def _rank_size(value: str) -> int:
+    s = str(value).strip().lower()
+    if s in SIZE_RANK:
+        return SIZE_RANK[s]
+    match = re.match(r"vit[-_]?([a-z]+)", s)
+    if match:
+        key = f"vit-{match.group(1)}"
+        return VIT_RANK.get(key, -1)
+    return -1
+
+def _load_summary(label: str, filename: str) -> pd.DataFrame:
+    path = summary_dir / filename
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} summary not found: {path}")
+    df = pd.read_csv(path)
+    df["dino_size"] = df["dino_size"].astype(str).str.lower()
+    df["dataset_type"] = df["dataset_type"].astype(str).str.lower()
+    df["use_lora"] = _normalize_bool(df["use_lora"])
+    return df
+
+def _select_largest_model(df: pd.DataFrame) -> pd.DataFrame:
+    ranks = df["dino_size"].apply(_rank_size)
+    if ranks.max() < 0:
+        sizes = sorted(df["dino_size"].unique().tolist())
+        raise RuntimeError(f"Unable to rank model sizes from: {sizes}")
+    return df.loc[ranks == ranks.max()].copy()
+
+def get_pair(df: pd.DataFrame, dataset_type: str) -> tuple[float, float]:
+    dataset_type = dataset_type.lower()
+    base_val = df[
+        (df["dataset_type"] == dataset_type) &
+        (df["use_lora"] == False)
     ][metric_col].iloc[0]
 
-    lora_val = df_g[
-        (df_g["dataset_type"] == dataset_type) &
-        (df_g["use_lora"] == True)
+    lora_val = df[
+        (df["dataset_type"] == dataset_type) &
+        (df["use_lora"] == True)
     ][metric_col].iloc[0]
 
     return base_val, lora_val
 
-lucchi_base, lucchi_lora = get_pair("lucchi")
-paired_base, paired_lora = get_pair("paired")
+summary_data = {}
+for label, filename in summary_files.items():
+    summary_df = _select_largest_model(_load_summary(label, filename))
+    summary_data[label] = {
+        "paired": get_pair(summary_df, "paired"),
+        "lucchi": get_pair(summary_df, "lucchi"),
+    }
 
 # === 2) External baselines (from the papers) ===
 # All values are foreground IoU in [0, 1].
@@ -57,23 +115,27 @@ external_df = pd.DataFrame(external_rows)
 external_df["new"] = np.nan    # no LoRA overlay for these
 external_df["is_ours"] = False
 
-# === 3) Your methods (Lucchi++ & Paired, ViT-g) ===
-our_rows = [
-    {
-        "label": "Paired - Droso+Lucchi++, ViT-g (Ours)",
-        "group": "Ours",
-        "baseline": paired_base,
-        "new": paired_lora,
-        "is_ours": True,
-    },
-    {
-        "label": "Lucchi++, ViT-g (Ours)",
-        "group": "Ours",
-        "baseline": lucchi_base,
-        "new": lucchi_lora,
-        "is_ours": True,
-    },
-]
+# === 3) Your methods (Lucchi++ & Paired, largest model per backbone) ===
+our_rows = []
+for label in ("DINOv2", "DINOv3", "OpenCLIP"):
+    paired_base, paired_lora = summary_data[label]["paired"]
+    lucchi_base, lucchi_lora = summary_data[label]["lucchi"]
+    our_rows.extend([
+        {
+            "label": f"Paired - Droso+Lucchi++, {label} (Ours)",
+            "group": "Ours",
+            "baseline": paired_base,
+            "new": paired_lora,
+            "is_ours": True,
+        },
+        {
+            "label": f"Lucchi++, {label} (Ours)",
+            "group": "Ours",
+            "baseline": lucchi_base,
+            "new": lucchi_lora,
+            "is_ours": True,
+        },
+    ])
 
 our_df = pd.DataFrame(our_rows)
 
