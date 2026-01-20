@@ -23,11 +23,11 @@ export TQDM_DISABLE=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-6}"
 
 SEED="${SLURM_ARRAY_TASK_ID:-0}"
-OUT_DIR="results/ablation_paired_balance_dinov2"
+CFG="configs/cluster/paired_dinov2_paired_balance.yaml"
 
-echo "[ablation] seed=${SEED} out_dir=${OUT_DIR}"
+echo "[ablation] seed=${SEED} cfg=${CFG}"
 
-"$PY" scripts/ablation_paired_balance_dinov2.py \
-  --seed "$SEED" \
-  --variant both \
-  --out_dir "$OUT_DIR"
+"$PY" scripts/ablation_paired_balance_dinov2.py \\
+  --cfg "$CFG" \\
+  --seed "$SEED" \\
+  --variant both
